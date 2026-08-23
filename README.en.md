@@ -9,7 +9,7 @@
     <img src="https://img.shields.io/github/v/release/LIXianSenQwQ/nomo?label=release" alt="GitHub Release">
   </a>
   <a href="./LICENSE">
-    <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue" alt="License">
+    <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" alt="License">
   </a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/Tauri-2-24C8DB" alt="Tauri 2">
@@ -274,7 +274,9 @@ If Nomo helps you, follow [LIXianSenQwQ](https://github.com/LIXianSenQwQ) and st
 
 ## License
 
-Nomo is licensed under the [PolyForm Noncommercial License 1.0.0](./LICENSE). It may only be used, modified, and distributed for noncommercial purposes. Contact the author before any commercial use.
+Nomo is free and open-source software licensed under the [GNU Affero General Public License v3.0 or later](./LICENSE). You may use, modify, and redistribute Nomo. If you distribute Nomo, including a modified version, or make a modified version available to users over a network, you must comply with the AGPL and provide the corresponding source code. The AGPL permits commercial use and paid redistribution, but downstream recipients must retain their AGPL rights.
+
+Contact the maintainers to discuss a separate commercial license for proprietary integration, proprietary distribution, or use without the AGPL's open-source obligations. Third-party components remain subject to their respective licenses.
 
 ## Community
 

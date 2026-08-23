@@ -9,7 +9,7 @@
     <img src="https://img.shields.io/github/v/release/LIXianSenQwQ/nomo?label=release" alt="GitHub Release">
   </a>
   <a href="./LICENSE">
-    <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue" alt="License">
+    <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" alt="License">
   </a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/Tauri-2-24C8DB" alt="Tauri 2">
@@ -274,7 +274,9 @@ pnpm run build:macos
 
 ## License
 
-Nomo 使用 [PolyForm Noncommercial License 1.0.0](./LICENSE) 授权，仅允许非商业用途使用、修改和分发。商业使用请先联系作者取得额外授权。
+Nomo 是自由开源软件，使用 [GNU Affero General Public License v3.0 or later](./LICENSE) 授权。你可以使用、修改和再分发 Nomo；分发 Nomo（包括修改版本）或通过网络向用户提供修改版本时，必须遵守 AGPL 并提供对应源代码。AGPL 允许商业使用和收费再分发，但下游不能取消接收者依据 AGPL 获得的权利。
+
+如需闭源集成、专有发行或希望不受 AGPL 开源义务约束，请联系维护者商议单独的商业授权。第三方组件继续适用各自的许可证。
 
 ## 社区
 
