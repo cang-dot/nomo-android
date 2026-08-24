@@ -174,6 +174,7 @@ pub(crate) struct ExportPdfInput {
     pub(crate) paper_size: Option<String>,
     pub(crate) orientation: Option<String>,
     pub(crate) margins: Option<PdfMarginsInput>,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) print_background: Option<bool>,
     #[serde(default)]
     pub(crate) outline: Vec<PdfOutlineEntry>,

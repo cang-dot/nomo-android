@@ -38,7 +38,7 @@ export function createLinkAttrs(href: unknown, title?: unknown): NormalizedLinkA
   };
 }
 
-export function normalizeLinkTitle(value: unknown): string | null {
+function normalizeLinkTitle(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   const title = String(value).trim();
   return title ? title : null;

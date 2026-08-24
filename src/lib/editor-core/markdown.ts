@@ -1115,7 +1115,7 @@ function createEmptyParagraphClose(): Token {
 }
 
 
-export function createTableMarkdown(rows: number, columns: number): string {
+function createTableMarkdown(rows: number, columns: number): string {
   const columnCount = Math.max(2, Math.min(columns, 6));
   const rowCount = Math.max(1, Math.min(rows, 8));
   const headers = Array.from({ length: columnCount }, () => '');

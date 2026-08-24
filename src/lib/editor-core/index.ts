@@ -6,7 +6,7 @@ export {
   getImageLoader,
   setImageLoader,
 } from './createEditorCore';
-export { DIAGRAM_TEMPLATES, getDiagramTemplate, isDiagramType } from './diagramTemplates';
+export { DIAGRAM_TEMPLATES,  isDiagramType } from './diagramTemplates';
 export type { DiagramTemplate, DiagramType } from './diagramTemplates';
 export type {
   EditorChangeEvent,

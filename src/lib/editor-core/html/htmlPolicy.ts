@@ -17,7 +17,7 @@ export const EDITABLE_INLINE_TAGS: ReadonlySet<string> = new Set([
 ]);
 
 /** 允许保留的 HTML 属性 */
-export const ALLOWED_ATTRS: ReadonlySet<string> = new Set(['class', 'id', 'href', 'title']);
+const ALLOWED_ATTRS: ReadonlySet<string> = new Set(['class', 'id', 'href', 'title']);
 
 /** 危险标签 — 出现则强制走 fallback */
 export const DANGEROUS_TAGS: ReadonlySet<string> = new Set([

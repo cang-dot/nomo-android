@@ -21,8 +21,8 @@ import {
 
 export const THEME_BOOT_SNAPSHOT_KEY = 'nomo.themeBootSnapshot.v2';
 export const LEGACY_THEME_BOOT_SNAPSHOT_KEY = 'nomo.themeBootSnapshot.v1';
-export const THEME_BOOT_SNAPSHOT_SCHEMA_VERSION = 2;
-export const SYSTEM_THEME_CHANGED_EVENT = 'nomo://system-theme-changed';
+const THEME_BOOT_SNAPSHOT_SCHEMA_VERSION = 2;
+const SYSTEM_THEME_CHANGED_EVENT = 'nomo://system-theme-changed';
 
 const THEME_TRANSITION_CLASS = 'theme-transitioning';
 const THEME_TRANSITION_MS = 180;
@@ -101,7 +101,7 @@ export interface ApplyThemeRuntimeOptions {
 
 let themePaintFollowUpId = 0;
 
-export function isThemeMode(value: unknown): value is ThemeMode {
+function isThemeMode(value: unknown): value is ThemeMode {
   return value === 'system' || value === 'light' || value === 'dark';
 }
 
@@ -120,7 +120,7 @@ export function getBrowserSystemScheme(): ColorScheme {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
-export function normalizeAppearancePreferences(
+function normalizeAppearancePreferences(
   value: Partial<AppearancePreferences> | null | undefined,
 ): AppearancePreferences {
   return {
@@ -218,7 +218,7 @@ export function applyResolvedTheme(
  * @param root 主题根节点，通常是 `document.documentElement`。
  * @param scheme 要声明的有效深浅色。
  */
-export function applyNativeColorScheme(root: HTMLElement, scheme: ColorScheme) {
+function applyNativeColorScheme(root: HTMLElement, scheme: ColorScheme) {
   root.style.colorScheme = scheme;
 }
 
@@ -240,7 +240,7 @@ export function cancelThemePaintFollowUp() {
  *
  * @param task 第一帧画完后执行的收尾；允许同步，不得再改已经提交的 CSS token。
  */
-export function scheduleThemePaintFollowUp(task: () => void) {
+function scheduleThemePaintFollowUp(task: () => void) {
   const id = ++themePaintFollowUpId;
   const run = () => {
     if (id !== themePaintFollowUpId) {
@@ -303,7 +303,7 @@ export function applyThemeRuntime(
  * @param desktopEnabled 是否处于 Tauri 桌面运行时；`undefined` 或 `false` 时为空操作。
  * @param resolved 已经写入前端的主题；只使用其中的有效深浅色和标题栏背景。
  */
-export function syncDesktopThemeChrome(
+function syncDesktopThemeChrome(
   desktopEnabled: boolean | undefined,
   resolved: ResolvedTheme,
 ) {

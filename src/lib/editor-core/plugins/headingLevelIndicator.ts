@@ -3,7 +3,7 @@ import type { ResolvedPos } from 'prosemirror-model';
 import { Plugin, PluginKey } from 'prosemirror-state';
 import type { EditorView } from 'prosemirror-view';
 
-export const headingLevelIndicatorKey = new PluginKey('headingLevelIndicator');
+const headingLevelIndicatorKey = new PluginKey('headingLevelIndicator');
 
 type HeadingContext = {
   element: HTMLElement;

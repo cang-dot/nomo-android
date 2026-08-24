@@ -109,7 +109,7 @@ export function partitionPersistedWorkspaceTabsForRestore(
   };
 }
 
-export function isPersistedWorkspaceState(value: unknown): value is PersistedWorkspaceState {
+function isPersistedWorkspaceState(value: unknown): value is PersistedWorkspaceState {
   if (!value || typeof value !== 'object') {
     return false;
   }

@@ -19,7 +19,7 @@ import {
 } from '../tableCommands';
 import { findActiveTableElement } from './tableControlDom';
 
-export const tableControlsKey = new PluginKey('tableControls');
+const tableControlsKey = new PluginKey('tableControls');
 
 type TableControlsOptions = {
   showOuterBorderInsertButtons?: boolean;

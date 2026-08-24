@@ -45,7 +45,7 @@ export function inlineCodeSelectionBridgePlugin(): Plugin<DecorationSet> {
   });
 }
 
-export function buildInlineCodeSelectionBridgeDecorations(
+function buildInlineCodeSelectionBridgeDecorations(
   doc: ProseMirrorNode,
   selectionFrom: number,
   selectionTo: number,

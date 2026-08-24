@@ -190,7 +190,7 @@ export function removeEmptyCalloutOnBackspace(
 /**
  * 检查当前选区是否在 callout 内。
  */
-export function isInCallout(state: EditorState): boolean {
+function isInCallout(state: EditorState): boolean {
   const schema = state.schema;
   const { $from } = state.selection;
   for (let d = $from.depth; d >= 0; d--) {
@@ -204,7 +204,7 @@ export function isInCallout(state: EditorState): boolean {
 /**
  * 获取当前选区所在的 callout 节点，不在 callout 内则返回 null。
  */
-export function getCalloutNode(state: EditorState): PmNode | null {
+function getCalloutNode(state: EditorState): PmNode | null {
   const schema = state.schema;
   const { $from } = state.selection;
   for (let d = $from.depth; d >= 0; d--) {

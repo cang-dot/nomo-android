@@ -188,7 +188,7 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
 export const SETTINGS_UPDATED_EVENT = 'nomo://settings-updated';
 
 const LEGACY_CLOSE_TO_TRAY_PROMPT_ANSWERED_KEY = 'closeToTrayPromptAnswered';
-export const APPEARANCE_THEME_MODEL_MIGRATION_KEY = 'appearanceThemeModelV1';
+const APPEARANCE_THEME_MODEL_MIGRATION_KEY = 'appearanceThemeModelV1';
 const ZOOM_TRANSITION_MS = 150;
 const ZOOM_REDUCED_TRANSITION_MS = 90;
 let zoomAnimationFrame: number | null = null;
@@ -239,7 +239,7 @@ export async function loadPersistedImageSettings(
   return normalizeImageSettings(saved);
 }
 
-export function persistImageSettings(desktopEnabled: boolean, settings: ImageHandlingSettings) {
+function persistImageSettings(desktopEnabled: boolean, settings: ImageHandlingSettings) {
   const normalized = normalizeImageSettings(settings);
   if (!desktopEnabled) {
     return;

@@ -385,7 +385,11 @@
           }
           try {
             const saved = await saveAppPreferences(desktopEnabled, settingsToSave, keysToSave);
-            if (desktopEnabled && keysToSave.includes('shortcutPreferences')) {
+            if (
+              desktopEnabled &&
+              (keysToSave.includes('interfaceLanguage') ||
+                keysToSave.includes('shortcutPreferences'))
+            ) {
               const { invoke } = await import('@tauri-apps/api/core');
               await invoke('refresh_interface_language_chrome').catch(() => undefined);
             }
@@ -502,10 +506,6 @@
   ) {
     if (!desktopEnabled) {
       return;
-    }
-    if ('interfaceLanguage' in patch) {
-      const { invoke } = await import('@tauri-apps/api/core');
-      void invoke('refresh_interface_language_chrome').catch(() => undefined);
     }
     const payload = { source: 'settings-window' as const, patch, effectiveScheme };
     if (emitDesktopEvent) {

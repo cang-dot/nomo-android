@@ -10,7 +10,7 @@ import {
 import type { EditorView } from 'prosemirror-view';
 import { schema } from '../schema';
 
-export const blockquoteInputKey = new PluginKey('blockquoteInput');
+const blockquoteInputKey = new PluginKey('blockquoteInput');
 
 export function blockquoteInputPlugin(): Plugin {
   let ignoreInputUntilNextTask = false;

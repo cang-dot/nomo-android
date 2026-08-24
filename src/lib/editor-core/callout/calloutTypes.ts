@@ -35,7 +35,7 @@ export function getCalloutLabel(
   return CALLOUT_LABELS[locale][normalizedType];
 }
 
-export function getCurrentCalloutLocale(): EffectiveCalloutLocale {
+function getCurrentCalloutLocale(): EffectiveCalloutLocale {
   const lang = document.documentElement.lang;
   if (lang === 'zh-TW') return 'zh-TW';
   if (lang === 'zh-CN') return 'zh-CN';

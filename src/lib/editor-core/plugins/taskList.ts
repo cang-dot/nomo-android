@@ -3,7 +3,7 @@ import { schema } from '../schema';
 import { Plugin, PluginKey } from 'prosemirror-state';
 import { Decoration, DecorationSet } from 'prosemirror-view';
 
-export const taskListPluginKey = new PluginKey('taskList');
+const taskListPluginKey = new PluginKey('taskList');
 
 export function taskListPlugin(): Plugin {
   return new Plugin({

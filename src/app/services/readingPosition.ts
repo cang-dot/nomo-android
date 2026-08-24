@@ -38,7 +38,7 @@ const store: ReadingPositionStore = {
   loaded: false,
 };
 
-export function normalizeReadingPositionFilePath(filePath: string): string {
+function normalizeReadingPositionFilePath(filePath: string): string {
   return filePath.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 

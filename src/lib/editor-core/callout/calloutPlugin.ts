@@ -1,6 +1,6 @@
 import { Plugin, PluginKey } from 'prosemirror-state';
 
-export const calloutPluginKey = new PluginKey('callout');
+const calloutPluginKey = new PluginKey('callout');
 
 /**
  * 创建 callout 插件。

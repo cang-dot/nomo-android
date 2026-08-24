@@ -239,8 +239,22 @@ describe('settings', () => {
     expect(settingsWindowSource).toContain(
       'saveAppPreferences(desktopEnabled, settingsToSave, keysToSave)',
     );
-    expect(settingsWindowSource).toContain("{ source: 'settings-window' as const, patch, effectiveScheme }");
-    expect(settingsWindowSource).toContain("'interfaceLanguage' in patch");
+    expect(settingsWindowSource).toContain(
+      "{ source: 'settings-window' as const, patch, effectiveScheme }",
+    );
+    expect(settingsWindowSource).toContain("keysToSave.includes('interfaceLanguage')");
+    const saveCallIndex = settingsWindowSource.indexOf(
+      'saveAppPreferences(desktopEnabled, settingsToSave, keysToSave)',
+    );
+    const languageChromeRefreshIndex = settingsWindowSource.indexOf(
+      "await invoke('refresh_interface_language_chrome')",
+    );
+    expect(languageChromeRefreshIndex).toBeGreaterThan(saveCallIndex);
+    const emitSettingsUpdatedSource = settingsWindowSource.slice(
+      settingsWindowSource.indexOf('async function emitSettingsUpdated'),
+      settingsWindowSource.indexOf('async function closeCurrentWindow'),
+    );
+    expect(emitSettingsUpdatedSource).not.toContain('refresh_interface_language_chrome');
     expect(settingsServiceSource).toContain('updateAppSettings(persistedEntries)');
     expect(tauriStorageSource).toContain("invoke('update_app_settings'");
     expect(appSource).toContain('applyAppPreferencesPatch');

@@ -42,7 +42,7 @@ export function isPlainTextPaste(transactions: readonly Transaction[]): boolean 
   return transactions.some((transaction) => transaction.getMeta(plainTextPasteMeta) === true);
 }
 
-export function normalizeClipboardText(text: string): string {
+function normalizeClipboardText(text: string): string {
   return text.replace(/\r\n?/g, '\n');
 }
 

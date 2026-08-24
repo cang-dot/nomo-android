@@ -2,7 +2,7 @@ import { Plugin, PluginKey } from 'prosemirror-state';
 import { Decoration, DecorationSet } from 'prosemirror-view';
 import type { CodeTokenLine } from '../../services/render';
 
-export const codeHighlightKey = new PluginKey('codeHighlight');
+const codeHighlightKey = new PluginKey('codeHighlight');
 
 export function codeHighlightPlugin(): Plugin {
   return new Plugin({
@@ -25,7 +25,7 @@ export function codeHighlightPlugin(): Plugin {
   });
 }
 
-export function buildCodeDecorations(
+function buildCodeDecorations(
   tokenLines: CodeTokenLine[],
   contentStart: number,
 ): Decoration[] {

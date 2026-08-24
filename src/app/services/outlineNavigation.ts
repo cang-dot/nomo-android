@@ -68,7 +68,7 @@ export function getSourceHeadingSelection(markdown: string, item: OutlineItem) {
   return { start, end: start + lines[item.line - 1].length };
 }
 
-export function getSourceTextTopInPane(
+function getSourceTextTopInPane(
   sourceTextarea: HTMLTextAreaElement | undefined,
   sourcePane: HTMLElement | undefined,
 ) {

@@ -29,11 +29,11 @@ function getMotionQuery(): MediaQueryList | null {
   return window.matchMedia(reducedMotionQuery);
 }
 
-export function prefersReducedMotion(): boolean {
+function prefersReducedMotion(): boolean {
   return getMotionQuery()?.matches ?? false;
 }
 
-export function motionDuration(kind: MotionKind = 'micro'): number {
+function motionDuration(kind: MotionKind = 'micro'): number {
   return prefersReducedMotion() ? reducedDurationByKind[kind] : durationByKind[kind];
 }
 

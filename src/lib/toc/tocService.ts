@@ -55,7 +55,7 @@ export function removeTocBlocks(markdown: string): string {
   return updated;
 }
 
-export function extractTocRanges(markdown: string): TocBlockRange[] {
+function extractTocRanges(markdown: string): TocBlockRange[] {
   const ranges: TocBlockRange[] = [];
   let startLine: MarkdownLine | null = null;
   let inFence = false;

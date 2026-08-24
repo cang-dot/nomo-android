@@ -10,7 +10,7 @@ import { isPlainTextPaste } from '../clipboardMarkdown';
  * 完整闭合后将段落组替换为 math_block 节点。
  * 未闭合不转换。
  */
-export const displayMathInputKey = new PluginKey('displayMathInput');
+const displayMathInputKey = new PluginKey('displayMathInput');
 
 export function displayMathInputPlugin(): Plugin {
   return new Plugin({

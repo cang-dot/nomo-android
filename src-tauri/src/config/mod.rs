@@ -311,6 +311,7 @@ pub(crate) fn read_app_setting_json(identifier: &str, key: &str) -> Option<Strin
 }
 
 /// 步骤3：读取渲染模式设置，仅在显式设置为 software 时返回 true
+#[cfg(target_os = "windows")]
 pub(crate) fn is_software_render_mode(identifier: &str) -> bool {
     matches!(
         read_app_setting_json(identifier, "renderMode").as_deref(),

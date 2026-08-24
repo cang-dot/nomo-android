@@ -145,7 +145,7 @@ function exposeLoggerControls(): void {
   });
 }
 
-export function isLoggerEnabled(): boolean {
+function isLoggerEnabled(): boolean {
   return loggerEnabled;
 }
 
@@ -159,7 +159,7 @@ export function disableLogger(): void {
   persistEnabled(false);
 }
 
-export function toggleLogger(): boolean {
+function toggleLogger(): boolean {
   if (loggerEnabled) {
     disableLogger();
   } else {
@@ -219,7 +219,7 @@ export function createPerfTimer(tag: string, operation: string) {
 }
 
 /** 测量并记录同步操作耗时。 */
-export function perf<T>(tag: string, operation: string, fn: () => T): T {
+function perf<T>(tag: string, operation: string, fn: () => T): T {
   const timer = createPerfTimer(tag, operation);
   try {
     return fn();
@@ -239,11 +239,11 @@ export async function perfAsync<T>(tag: string, operation: string, fn: () => Pro
 }
 
 /** 获取当前日志缓冲区。 */
-export function getLogBuffer(): readonly LogEntry[] {
+function getLogBuffer(): readonly LogEntry[] {
   return logBuffer;
 }
 
 /** 清空日志缓冲区。 */
-export function clearLogBuffer(): void {
+function clearLogBuffer(): void {
   logBuffer = [];
 }

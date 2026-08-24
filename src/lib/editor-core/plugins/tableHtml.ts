@@ -3,7 +3,7 @@ import { Plugin, PluginKey } from 'prosemirror-state';
 import { Decoration, DecorationSet } from 'prosemirror-view';
 import { escapeHtml, sanitizeHtml } from '../utils/html';
 
-export const tableHtmlKey = new PluginKey('tableHtml');
+const tableHtmlKey = new PluginKey('tableHtml');
 
 export function tableHtmlBlockPlugin(): Plugin {
   return new Plugin({

@@ -98,11 +98,11 @@ export async function loadRecentEntries(desktopEnabled: boolean): Promise<Recent
 }
 
 /** @deprecated 使用 loadRecentEntries */
-export async function loadRecentDocuments(desktopEnabled: boolean): Promise<RecentEntry[]> {
+async function loadRecentDocuments(desktopEnabled: boolean): Promise<RecentEntry[]> {
   return loadRecentEntries(desktopEnabled);
 }
 
-export async function loadDocumentSnapshots(
+async function loadDocumentSnapshots(
   desktopEnabled: boolean,
   nativePath: string | null,
 ): Promise<SnapshotRecord[]> {

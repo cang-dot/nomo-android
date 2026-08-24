@@ -4,7 +4,7 @@ import { createTocList } from '../../toc/tocService';
 import { serializeMarkdown } from '../markdown';
 import { schema } from '../schema';
 
-export const tocSyncKey = new PluginKey('tocSync');
+const tocSyncKey = new PluginKey('tocSync');
 
 /**
  * 正文目录同步插件：标题变化后原位更新 TOC 节点，不重建 EditorState。

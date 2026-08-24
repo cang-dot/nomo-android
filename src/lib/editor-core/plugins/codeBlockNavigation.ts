@@ -23,7 +23,7 @@ export type CodeBlockNavCallback = {
   prepareMathKeyboardEntry?: (caret: 'start' | 'end') => void;
 };
 
-export const codeBlockNavigationKey = new PluginKey('codeBlockNavigation');
+const codeBlockNavigationKey = new PluginKey('codeBlockNavigation');
 
 type AdjacentEditableBlock = {
   node: ProseMirrorNode;

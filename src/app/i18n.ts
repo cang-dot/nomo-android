@@ -13,7 +13,7 @@ export interface InterfaceLanguageOption {
   labelKey: string;
 }
 
-export const SUPPORTED_INTERFACE_LOCALES: EffectiveInterfaceLocale[] = [
+const SUPPORTED_INTERFACE_LOCALES: EffectiveInterfaceLocale[] = [
   'zh-CN',
   'zh-TW',
   'en-US',
@@ -26,7 +26,7 @@ export const INTERFACE_LANGUAGE_OPTIONS: InterfaceLanguageOption[] = [
   { value: 'en-US', labelKey: 'interfaceLanguageEnUs' },
   { value: 'ja-JP', labelKey: 'interfaceLanguageJaJp' },
 ];
-export const INTERFACE_LOCALE_CHANGED_EVENT = 'nomo://interface-locale-changed';
+const INTERFACE_LOCALE_CHANGED_EVENT = 'nomo://interface-locale-changed';
 
 export const DEFAULT_INTERFACE_LANGUAGE: InterfaceLanguagePreference = 'system';
 export const DEFAULT_EFFECTIVE_INTERFACE_LOCALE: EffectiveInterfaceLocale = 'en-US';
@@ -1978,7 +1978,7 @@ export const t = new Proxy(generatedMessages, {
   },
 }) as MessageBag;
 
-export const interfaceLocaleStore = writable<EffectiveInterfaceLocale>(currentInterfaceLocale);
+const interfaceLocaleStore = writable<EffectiveInterfaceLocale>(currentInterfaceLocale);
 
 export function getInterfaceLocale(): EffectiveInterfaceLocale {
   return getLocale() as EffectiveInterfaceLocale;
@@ -1990,14 +1990,14 @@ export function isInterfaceLanguagePreference(
   return value === 'system' || isEffectiveInterfaceLocale(value);
 }
 
-export function isEffectiveInterfaceLocale(value: unknown): value is EffectiveInterfaceLocale {
+function isEffectiveInterfaceLocale(value: unknown): value is EffectiveInterfaceLocale {
   return (
     typeof value === 'string' &&
     SUPPORTED_INTERFACE_LOCALES.includes(value as EffectiveInterfaceLocale)
   );
 }
 
-export function getBrowserLanguageCandidates(): string[] {
+function getBrowserLanguageCandidates(): string[] {
   if (typeof navigator === 'undefined') {
     return [];
   }

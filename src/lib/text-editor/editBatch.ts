@@ -135,7 +135,7 @@ export class SegmentedEditBatcher {
   }
 }
 
-export function mergeAdjacentEdits(edits: SegmentedEdit[]) {
+function mergeAdjacentEdits(edits: SegmentedEdit[]) {
   if (edits.length === 0) return [];
   const sorted = edits.map(validateEdit).sort((left, right) => left.fromByte - right.fromByte);
   const merged: SegmentedEdit[] = [{ ...sorted[0] }];

@@ -62,7 +62,7 @@ export async function runSoftwareUpdateCheck(startup = false): Promise<SoftwareU
   return refreshSoftwareUpdateState();
 }
 
-export async function refreshSoftwareUpdateState(): Promise<SoftwareUpdateSnapshot> {
+async function refreshSoftwareUpdateState(): Promise<SoftwareUpdateSnapshot> {
   const snapshot = await getSoftwareUpdateState();
   softwareUpdateState.set(snapshot);
   return snapshot;
@@ -90,6 +90,6 @@ export async function startSoftwareUpdateInstall(
   }
 }
 
-export function currentSoftwareUpdateState(): SoftwareUpdateSnapshot {
+function currentSoftwareUpdateState(): SoftwareUpdateSnapshot {
   return get(softwareUpdateState);
 }

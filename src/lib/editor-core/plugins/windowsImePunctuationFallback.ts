@@ -5,7 +5,7 @@ import {
   type WindowsImePunctuationFallbackOptions,
 } from '../../input/windowsImePunctuationFallback';
 
-export const windowsImePunctuationFallbackKey = new PluginKey('windowsImePunctuationFallback');
+const windowsImePunctuationFallbackKey = new PluginKey('windowsImePunctuationFallback');
 
 export function windowsImePunctuationFallbackPlugin(
   options: WindowsImePunctuationFallbackOptions = {},

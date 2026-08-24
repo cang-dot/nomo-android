@@ -8,7 +8,7 @@ import { schema } from '../schema';
  * 当代码块、公式块、表格等顶层非段落块被插入后，
  * 如果其后方不是 paragraph，自动紧跟追加一个空段落，防止光标无法移到该块下方。
  */
-export const trailingParagraphKey = new PluginKey('trailingParagraph');
+const trailingParagraphKey = new PluginKey('trailingParagraph');
 
 const TRAILING_PARAGRAPH_NODE_TYPES = new Set([
   'code_block',

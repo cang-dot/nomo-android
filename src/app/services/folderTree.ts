@@ -36,7 +36,7 @@ export function toggleExpandedFolder(expandedFolders: Set<string>, folderPath: s
   return nextExpandedFolders;
 }
 
-export function getDefaultExpandedFolders(folderTree: FileTreeNode[]) {
+function getDefaultExpandedFolders(folderTree: FileTreeNode[]) {
   const expandedFolders = new Set<string>();
   for (const item of folderTree) {
     if (item.is_dir && item.path) {

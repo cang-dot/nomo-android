@@ -10,7 +10,7 @@ export interface FirstRunSampleState {
   hasPendingFolder: boolean;
 }
 
-export function hasHandledFirstRunSample(settings: Pick<SettingRecord, 'key' | 'valueJson'>[]) {
+function hasHandledFirstRunSample(settings: Pick<SettingRecord, 'key' | 'valueJson'>[]) {
   const record = settings.find((setting) => setting.key === FIRST_RUN_SAMPLE_DOCUMENT_OPENED_KEY);
   if (!record) {
     return false;

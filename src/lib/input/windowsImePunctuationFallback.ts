@@ -1,5 +1,5 @@
 export const WINDOWS_IME_PARENTHESES_TEXT = '（）';
-export const WINDOWS_IME_PARENTHESES_CARET_OFFSET = 1;
+const WINDOWS_IME_PARENTHESES_CARET_OFFSET = 1;
 
 export interface WindowsImePunctuationFallbackOptions {
   enabled?: boolean | (() => boolean);
@@ -171,7 +171,7 @@ export function createSourceTextareaImePunctuationFallback(
   };
 }
 
-export function insertTextAtTextareaSelection(
+function insertTextAtTextareaSelection(
   textarea: HTMLTextAreaElement,
   replacement: WindowsImePunctuationReplacement,
 ): void {

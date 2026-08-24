@@ -11,9 +11,9 @@ import {
 } from '../../lib/theme/types';
 
 export const DEFAULT_COLOR_THEME_ID = 'nomo-default';
-export const AMBER_PAPER_THEME_ID = 'nomo-amber-paper';
-export const CLASSIC_GRAY_THEME_ID = 'nomo-classic-gray';
-export const GITHUB_THEME_ID = 'nomo-github';
+const AMBER_PAPER_THEME_ID = 'nomo-amber-paper';
+const CLASSIC_GRAY_THEME_ID = 'nomo-classic-gray';
+const GITHUB_THEME_ID = 'nomo-github';
 export const DEFAULT_DOCUMENT_STYLE_ID = 'nomo-modern';
 export const CLASSIC_DOCUMENT_STYLE_ID = 'nomo-classic';
 
@@ -1006,7 +1006,7 @@ export function getThemeDisplayName(theme: ThemeDefinition, locale: string) {
   return theme.localizedNames[locale] ?? theme.localizedNames['en-US'] ?? theme.id;
 }
 
-export function getDocumentStyleDisplayName(style: DocumentStyleDefinition, locale: string) {
+function getDocumentStyleDisplayName(style: DocumentStyleDefinition, locale: string) {
   return style.localizedNames[locale] ?? style.localizedNames['en-US'] ?? style.id;
 }
 

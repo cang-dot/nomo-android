@@ -857,11 +857,6 @@ pub(crate) fn legacy_windows_installer_exists() -> Result<bool, String> {
     Ok(false)
 }
 
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn legacy_windows_installer_exists() -> Result<bool, String> {
-    Ok(false)
-}
-
 #[cfg(target_os = "windows")]
 fn executable_belongs_to_install_location(exe_path: &Path, location: &str) -> bool {
     let install_dir = PathBuf::from(location.trim().trim_matches('"'));

@@ -79,7 +79,7 @@ export interface SoftwareUpdateSnapshot {
   noticeWindowLabel?: string;
 }
 
-export const SOFTWARE_UPDATE_STATE_EVENT = 'nomo://software-update-state';
+const SOFTWARE_UPDATE_STATE_EVENT = 'nomo://software-update-state';
 
 interface SoftwareUpdateRuntime {
   isDesktopRuntime: () => boolean;
@@ -178,7 +178,7 @@ export function createSoftwareUpdateProgress(
   };
 }
 
-export async function getCachedSoftwareUpdate(): Promise<DownloadedSoftwareUpdate | null> {
+async function getCachedSoftwareUpdate(): Promise<DownloadedSoftwareUpdate | null> {
   if (!isSoftwareUpdateSupported()) {
     return null;
   }

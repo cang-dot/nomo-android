@@ -3,7 +3,9 @@ use serde::Deserialize;
 use tauri::{AppHandle, Runtime};
 
 const PACKAGE_IDENTITY_JSON: &str = include_str!("../msix/package-identity.json");
+#[cfg(target_os = "windows")]
 const CONTEXT_MENU_DISABLED_MARKER: &str = "shell-context-menu.disabled";
+#[cfg(target_os = "windows")]
 const LEGACY_INSTALLER_CHECK_MARKER: &str = "legacy-installer-check-complete";
 
 #[derive(Debug, Deserialize)]
@@ -140,11 +142,6 @@ pub(crate) fn context_menu_enabled() -> Result<bool, String> {
     Ok(!package_local_state_file(CONTEXT_MENU_DISABLED_MARKER)?.is_file())
 }
 
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn context_menu_enabled() -> Result<bool, String> {
-    Ok(false)
-}
-
 #[cfg(target_os = "windows")]
 pub(crate) fn set_context_menu_enabled(enabled: bool) -> Result<(), String> {
     let marker = package_local_state_file(CONTEXT_MENU_DISABLED_MARKER)?;
@@ -158,11 +155,6 @@ pub(crate) fn set_context_menu_enabled(enabled: bool) -> Result<(), String> {
     }
     notify_shell_association_changed();
     Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn set_context_menu_enabled(_enabled: bool) -> Result<(), String> {
-    Err("MSIX 右键菜单仅支持 Windows。".to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -195,11 +187,6 @@ fn open_windows_settings(uri: &str) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 pub(crate) fn open_default_apps_settings() -> Result<(), String> {
     open_windows_settings("ms-settings:defaultapps")
-}
-
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn open_default_apps_settings() -> Result<(), String> {
-    Err("默认应用设置仅支持 Windows。".to_string())
 }
 
 #[tauri::command]
