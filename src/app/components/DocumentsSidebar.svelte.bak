@@ -1,0 +1,210 @@
+<script lang="ts">
+  import { FileJson2, FileText, FileType2, FolderClosed, X } from '@lucide/svelte';
+  import { createEventDispatcher } from 'svelte';
+  import { Search } from '@lucide/svelte';
+  import { readMarkdownFile } from '../../lib/desktop/tauriStorage';
+  import type { RecentEntry } from '../../lib/desktop/tauriStorage';
+  import type { Tab } from '../types';
+  import { t } from '../i18n';
+
+  export let tabs: Tab[];
+  export let activeTabId: string;
+  export let recentFiles: RecentEntry[];
+  export let open = false;
+  export let isMobileRuntime = true;
+
+  const dispatch = createEventDispatcher<{
+    close: void;
+    openTab: string;
+    openPath: string;
+    removeRecent: string;
+  }>();
+
+  let searchQuery = '';
+  let contentIndex = new Map<string, string>();
+  let indexingPaths = new Set<string>();
+
+  interface CachedDocument {
+    key: string;
+    id?: string;
+    path: string;
+    name: string;
+    directory: string;
+    dirty: boolean;
+    active: boolean;
+    openedAt: number;
+    kind: Tab['documentKind'];
+  }
+
+  function normalizeDirectory(path: string) {
+    if (!path) return t.currentFolder();
+    const normalized = path.replace(/\\/g, '/');
+    const index = normalized.lastIndexOf('/');
+    return index > 0 ? normalized.slice(0, index) : normalized;
+  }
+
+  $: recentByPath = new Map(recentFiles.filter((entry) => entry.entryType === 'file').map((entry) => [entry.path.toLowerCase(), entry]));
+
+  $: documents = [
+    ...tabs.map((tab): CachedDocument => ({
+      key: `tab:${tab.id}`,
+      id: tab.id,
+      path: tab.nativePath ?? tab.filePath,
+      name: tab.fileName || tab.filePath,
+      directory: normalizeDirectory(tab.nativePath ?? tab.filePath),
+      dirty: tab.dirty,
+      active: tab.id === activeTabId,
+      openedAt: recentByPath.get((tab.nativePath ?? tab.filePath).toLowerCase())?.openedAt ?? Date.now(),
+      kind: tab.documentKind,
+    })),
+    ...recentFiles
+      .filter((entry) =>
+        entry.entryType === 'file' &&
+        !tabs.some((tab) => (tab.nativePath ?? tab.filePath).toLowerCase() === entry.path.toLowerCase()),
+      )
+      .map((entry): CachedDocument => ({
+        key: `recent:${entry.path}`,
+        path: entry.path,
+        name: entry.title || entry.path.replace(/\\/g, '/').split('/').pop() || entry.path,
+        directory: normalizeDirectory(entry.path),
+        dirty: false,
+        active: false,
+        openedAt: entry.openedAt,
+        kind: entry.path.toLowerCase().endsWith('.json') ? 'json' : 'markdown',
+      })),
+  ].sort((left, right) => {
+    const sourceOrder = left.directory.localeCompare(right.directory, undefined, { sensitivity: 'base' });
+    return sourceOrder !== 0 ? sourceOrder : right.openedAt - left.openedAt;
+  });
+
+  function normalizeSearch(value: string) {
+    return value.trim().toLowerCase().normalize('NFKD');
+  }
+
+  function fuzzyMatch(haystack: string, needle: string) {
+    if (!needle) return true;
+    let cursor = 0;
+    for (const char of needle) {
+      cursor = haystack.indexOf(char, cursor);
+      if (cursor < 0) return false;
+      cursor += 1;
+    }
+    return true;
+  }
+
+  async function indexDocumentContent(document: CachedDocument) {
+    if (contentIndex.has(document.path) || indexingPaths.has(document.path) || !isMobileRuntime) return;
+    indexingPaths.add(document.path);
+    try {
+      const result = await readMarkdownFile(document.path);
+      contentIndex.set(document.path, result.markdown.toLowerCase());
+    } catch {
+      contentIndex.set(document.path, '');
+    } finally {
+      indexingPaths.delete(document.path);
+      contentIndex = new Map(contentIndex);
+    }
+  }
+
+  $: if (open && searchQuery.trim().length >= 2) {
+    documents.forEach((document) => void indexDocumentContent(document));
+  }
+
+  $: filteredDocuments = documents.filter((document) => {
+    const query = normalizeSearch(searchQuery);
+    if (!query) return true;
+    const name = normalizeSearch(document.name);
+    const path = normalizeSearch(document.path);
+    if (name.includes(query) || path.includes(query) || fuzzyMatch(name, query)) return true;
+    return contentIndex.get(document.path)?.includes(query) ?? false;
+  });
+
+  $: groupedDocuments = filteredDocuments.reduce<Array<[string, CachedDocument[]]>>((groups, document) => {
+    const lastGroup = groups[groups.length - 1];
+    if (lastGroup && lastGroup[0] === document.directory) {
+      lastGroup[1].push(document);
+    } else {
+      groups.push([document.directory, [document]]);
+    }
+    return groups;
+  }, []);
+
+  function iconFor(kind: CachedDocument['kind']) {
+    return kind === 'json' ? FileJson2 : kind === 'text' ? FileType2 : FileText;
+  }
+</script>
+
+{#if open}
+  <button class="documents-backdrop" aria-label={t.close()} on:click={() => dispatch('close')}></button>
+{/if}
+
+<aside
+  class="documents-sidebar"
+  class:open
+  style={`--documents-drag: ${open ? 0 : -100}%`}
+  aria-hidden={!open}
+  inert={!open}
+>
+  <header class="documents-header">
+    <div>
+      <strong>{t.file()}</strong>
+      <span>{documents.length}</span>
+    </div>
+    <button type="button" aria-label={t.close()} on:click={() => dispatch('close')}>
+      <X size={18} />
+    </button>
+  </header>
+
+  <label class="documents-search">
+    <Search size={16} />
+    <input
+      type="search"
+      placeholder={t.searchReady()}
+      bind:value={searchQuery}
+    />
+  </label>
+
+  <div class="documents-list">
+    {#if searchQuery && !filteredDocuments.length}
+      <p class="empty-documents">{t.searchResultCount({ count: 0 })}</p>
+    {/if}
+    {#each groupedDocuments as [directory, group], groupIndex (directory)}
+      <section class="document-group" style={`--group-index: ${groupIndex}`}>
+        <h3 title={directory}>
+          <FolderClosed size={14} />
+          <span>{directory}</span>
+        </h3>
+        {#each group as document, itemIndex (document.key)}
+          {@const DocumentIcon = iconFor(document.kind)}
+          <div
+            class="document-row"
+            class:active={document.active}
+            style={`--item-index: ${itemIndex}`}
+            role="button"
+            tabindex={0}
+            on:click={() => document.id ? dispatch('openTab', document.id) : dispatch('openPath', document.path)}
+            on:keydown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                if (document.id) dispatch('openTab', document.id);
+                else dispatch('openPath', document.path);
+              }
+            }}
+          >
+            <DocumentIcon size={17} />
+            <span class="document-name">{document.name}</span>
+            {#if document.dirty}
+              <i class="dirty-dot" aria-label={t.unsavedChanges()}></i>
+            {:else if !document.id}
+              <button class="remove-recent" type="button" aria-label={t.delete()} on:click|stopPropagation={() => dispatch('removeRecent', document.path)}>
+                <X size={13} />
+              </button>
+            {/if}
+          </div>
+        {/each}
+      </section>
+    {:else}
+      <p class="empty-documents">{t.currentFolder()}</p>
+    {/each}
+  </div>
+</aside>
