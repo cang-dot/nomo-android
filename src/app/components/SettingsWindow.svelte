@@ -1966,7 +1966,7 @@
                 </div>
               </div>
 
-              <label class="toggle-row hidden-mobile" for="filePreviewEnabled">
+              <label class="toggle-row" class:hidden-mobile={isMobileRuntime} for="filePreviewEnabled">
                 <span>
                   <span class="toggle-title">{t.filePreviewTab()}</span>
                   <span class="toggle-desc">{t.filePreviewTabDescription()}</span>
@@ -1994,7 +1994,7 @@
                 <span class="toggle-switch" aria-hidden="true"></span>
               </label>
 
-              <div class="setting-row hidden-mobile">
+              <div class="setting-row" class:hidden-mobile={isMobileRuntime}>
                 <div>
                   <span class="setting-label">{t.closeWindowBehavior()}</span>
                   <p>{t.closeWindowBehaviorDescription()}</p>
@@ -2058,7 +2058,7 @@
                 </div>
               </div>
 
-              <div class="setting-row hidden-mobile">
+              <div class="setting-row" class:hidden-mobile={isMobileRuntime}>
                 <div>
                   <span class="setting-label">{t.bindMdDefaultApp()}</span>
                   <p>{mdAssociationDesc}</p>
@@ -2091,7 +2091,7 @@
                 </div>
               </div>
 
-              <div class="setting-row hidden-mobile">
+              <div class="setting-row" class:hidden-mobile={isMobileRuntime}>
                 <div>
                   <span class="setting-label">{t.registerMdContextMenu()}</span>
                   <p>{contextMenuDesc}</p>

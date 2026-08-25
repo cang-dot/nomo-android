@@ -388,7 +388,6 @@
     max-height: calc(100dvh - 16px);
     overflow: auto;
     padding: 4px;
-    overflow: visible;
     border: 1px solid var(--md-editor-border);
     border-radius: var(--md-editor-radius-md);
     background: var(--md-editor-surface);
