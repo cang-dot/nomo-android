@@ -4,7 +4,6 @@
     FileText,
     FileType2,
     FolderClosed,
-    Menu,
     Search,
     X,
   } from '@lucide/svelte';
@@ -16,15 +15,17 @@
   export let tabs: Tab[];
   export let activeTabId: string;
   export let recentFiles: RecentEntry[];
+  export let open = false;
+  export let showTrigger = false;
   export let switchTab: (tabId: string) => void;
   export let openRecentEntry: (path: string) => void;
   export let removeRecentEntry: (path: string) => void;
 
-  let open = false;
   let visible = false;
   let query = '';
   let contentIndex = new Map<string, string>();
   let indexingPaths = new Set<string>();
+  let indexRunActive = false;
   let drawerElement: HTMLElement | null = null;
   let edgeElement: HTMLElement | null = null;
   let pointerId: number | null = null;
@@ -46,6 +47,7 @@
     active: boolean;
     openedAt: number;
     kind: Tab['documentKind'];
+    content: string;
   }
 
   function normalizeDirectory(path: string) {
@@ -86,6 +88,7 @@
       active: tab.id === activeTabId,
       openedAt: recentByPath.get((tab.nativePath ?? tab.filePath).toLowerCase())?.openedAt ?? 0,
       kind: tab.documentKind,
+      content: tab.documentKind === 'markdown' ? tab.markdown : '',
     })),
     ...recentFiles
       .filter(
@@ -104,6 +107,7 @@
         active: false,
         openedAt: entry.openedAt,
         kind: entry.path.toLowerCase().endsWith('.json') ? 'json' : 'markdown',
+        content: '',
       })),
   ].sort((left, right) => {
     const sourceOrder = left.directory.localeCompare(right.directory, undefined, { sensitivity: 'base' });
@@ -113,30 +117,51 @@
   async function indexContent(document: CachedDocument) {
     if (contentIndex.has(document.path) || indexingPaths.has(document.path)) return;
     indexingPaths.add(document.path);
+    indexingPaths = new Set(indexingPaths);
     try {
       const result = await readMarkdownFile(document.path);
-      contentIndex.set(document.path, result.markdown.toLowerCase());
+      contentIndex.set(document.path, normalizeSearch(result.markdown));
     } catch {
       contentIndex.set(document.path, '');
     } finally {
       indexingPaths.delete(document.path);
+      indexingPaths = new Set(indexingPaths);
       contentIndex = new Map(contentIndex);
     }
   }
 
-  $: if (open && normalizeSearch(query).length >= 2) {
-    documents.forEach((document) => void indexContent(document));
+  async function ensureContentIndex() {
+    if (indexRunActive) return;
+    const pending = documents.filter(
+      (document) => !document.content && !contentIndex.has(document.path),
+    );
+    if (!pending.length) return;
+    indexRunActive = true;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < pending.length) {
+        const document = pending[cursor];
+        cursor += 1;
+        await indexContent(document);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, pending.length) }, () => worker()));
+    indexRunActive = false;
+  }
+
+  $: if (open && normalizeSearch(query)) {
+    void ensureContentIndex();
   }
 
   $: filteredDocuments = documents.filter((document) => {
     const normalizedQuery = normalizeSearch(query);
     if (!normalizedQuery) return true;
     const name = normalizeSearch(document.name);
-    const path = normalizeSearch(document.path);
+    const content = normalizeSearch(document.content);
     return (
       name.includes(normalizedQuery) ||
-      path.includes(normalizedQuery) ||
       fuzzyMatch(name, normalizedQuery) ||
+      content.includes(normalizedQuery) ||
       contentIndex.get(document.path)?.includes(normalizedQuery) === true
     );
   });
@@ -196,9 +221,6 @@
     }
     if (dragAxis !== 'horizontal') return;
     if (event.cancelable) event.preventDefault();
-    if (!isDragging && drawerElement && !drawerElement.hasPointerCapture(event.pointerId)) {
-      drawerElement.setPointerCapture(event.pointerId);
-    }
     isDragging = true;
     const width = drawerElement?.getBoundingClientRect().width ?? window.innerWidth * 0.86;
     dragOffset = open ? clampOffset(deltaX) : Math.min(width, Math.max(0, deltaX));
@@ -226,26 +248,42 @@
     if (document.id) switchTab(document.id);
     else openRecentEntry(document.path);
   }
+
+  function handleWindowPointerDown(event: PointerEvent) {
+    if (event.pointerType === 'mouse' || pointerId !== null) return;
+    if (!open) {
+      if (event.clientX <= 56) beginDrag(event, 'edge');
+      return;
+    }
+    if (drawerElement?.contains(event.target as Node)) beginDrag(event, 'drawer');
+  }
 </script>
 
+<svelte:window
+  on:pointerdown={handleWindowPointerDown}
+  on:pointermove={moveDrag}
+  on:pointerup={endDrag}
+  on:pointercancel={endDrag}
+/>
+
 <div class="mobile-drawer-root" class:open aria-label={t.file()}>
-  {#if !open}
+  {#if !open && showTrigger}
     <button
       class="mobile-drawer-trigger"
       type="button"
       aria-label={t.file()}
       on:click={() => setOpen(true)}
     >
-      <Menu size={20} />
+      <FolderClosed size={20} />
     </button>
+  {/if}
+
+  {#if !open}
     <div
       bind:this={edgeElement}
       class="mobile-drawer-edge"
       aria-hidden="true"
       on:pointerdown={(event) => beginDrag(event, 'edge')}
-      on:pointermove={moveDrag}
-      on:pointerup={endDrag}
-      on:pointercancel={endDrag}
     ></div>
   {/if}
 
@@ -261,10 +299,6 @@
     class:dragging={isDragging}
     aria-hidden={!open}
     style={`--drawer-offset: ${dragOffset}px`}
-    on:pointerdown={(event) => beginDrag(event, 'drawer')}
-    on:pointermove={moveDrag}
-    on:pointerup={endDrag}
-    on:pointercancel={endDrag}
     on:transitionend={(event) => {
       if (event.propertyName === 'transform' && !open) visible = false;
     }}
@@ -346,7 +380,7 @@
 
   .mobile-drawer-trigger {
     position: fixed;
-    top: max(12px, min(env(safe-area-inset-top), 24px));
+    top: max(34px, env(safe-area-inset-top));
     left: max(10px, env(safe-area-inset-left));
     z-index: 4003;
     display: grid;
@@ -368,9 +402,11 @@
 
   .mobile-drawer-edge {
     position: fixed;
-    inset: 0 auto 0 0;
+    top: calc(max(30px, env(safe-area-inset-top)) + 52px);
+    bottom: env(safe-area-inset-bottom);
+    left: 0;
     z-index: 4001;
-    width: 28px;
+    width: 64px;
     touch-action: pan-y;
   }
 
@@ -386,7 +422,7 @@
 
   .mobile-drawer-panel {
     position: fixed;
-    inset: max(0px, min(env(safe-area-inset-top), 24px)) auto env(safe-area-inset-bottom) 0;
+    inset: max(30px, env(safe-area-inset-top)) auto env(safe-area-inset-bottom) 0;
     z-index: 4002;
     display: flex;
     width: min(86vw, 360px);

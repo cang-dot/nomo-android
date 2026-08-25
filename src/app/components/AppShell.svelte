@@ -211,6 +211,7 @@
   export let onMarkdownLintIssueSelect: (issue: MarkdownLintIssue) => boolean;
   export let appBootState: AppBootState;
   const isMobileRuntime = /Android|iPhone|iPad|iPod/i.test(globalThis.navigator?.userAgent ?? '');
+  let mobileDocumentsOpen = false;
   export let onSourceScroll: (() => void) | undefined = undefined;
   export let onSemanticScroll: (() => void) | undefined = undefined;
 
@@ -437,6 +438,8 @@
                   {setMode}
                   {toggleOutlineVisible}
                   {toggleToolbar}
+                  mobile={isMobileRuntime}
+                  openMobileDocuments={() => (mobileDocumentsOpen = true)}
                   inactive={!toolbarOverflowVisible || markdownMiniActive}
                   openSearchPanel={() => openSearchPanel(false)}
                 />
@@ -584,9 +587,11 @@
 
   {#if isMobileRuntime}
     <MobileDocumentsSidebar
+      bind:open={mobileDocumentsOpen}
       {tabs}
       {activeTabId}
       {recentFiles}
+      showTrigger={!hasOpenDocument || effectiveToolbarHidden}
       openRecentEntry={(path) => void openRecentEntry(path, 'file')}
       removeRecentEntry={removeRecentEntry}
       switchTab={switchTab}

@@ -14,6 +14,7 @@
     Link,
     List,
     ListTree,
+    Menu,
     MessageSquare,
     Info,
     Quote,
@@ -55,6 +56,8 @@
   export let toggleToolbar: () => void;
   export let inactive = false;
   export let openSearchPanel: () => void;
+  export let mobile = false;
+  export let openMobileDocuments: () => void = () => undefined;
 
   const tableRows = [1, 2, 3, 4, 5];
   const tableColumns = [1, 2, 3, 4, 5, 6];
@@ -196,6 +199,18 @@
 
 {#key interfaceLocale}
   <div class="toolbar" aria-label={t.formatToolbar()} data-interface-locale={interfaceLocale}>
+    {#if mobile}
+      <button
+        class="mobile-toolbar-menu"
+        type="button"
+        title={t.file()}
+        aria-label={t.file()}
+        on:click={openMobileDocuments}
+      >
+        <Menu size={20} />
+      </button>
+      <span class="mobile-toolbar-divider" aria-hidden="true"></span>
+    {/if}
     <div class="toolbar-group toolbar-group-core">
       <div class="style-picker-anchor" use:clickOutside={closeStylePicker}>
         <button
