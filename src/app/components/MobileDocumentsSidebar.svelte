@@ -50,6 +50,17 @@
     content: string;
   }
 
+  interface SnippetPart {
+    text: string;
+    highlighted: boolean;
+  }
+
+  interface ContentSnippet {
+    leadingEllipsis: boolean;
+    trailingEllipsis: boolean;
+    parts: SnippetPart[];
+  }
+
   function normalizeDirectory(path: string) {
     if (!path) return t.currentFolder();
     const normalized = path.replace(/\\/g, '/');
@@ -175,6 +186,45 @@
 
   function iconFor(kind: CachedDocument['kind']) {
     return kind === 'json' ? FileJson2 : kind === 'text' ? FileType2 : FileText;
+  }
+
+  function contentSnippet(document: CachedDocument): ContentSnippet | null {
+    const searchTerm = query.trim();
+    if (!searchTerm) return null;
+    const source = document.content || contentIndex.get(document.path) || '';
+    if (!source) return null;
+    const compact = source.replace(/\s+/g, ' ').trim();
+    const normalizedContent = compact.toLocaleLowerCase();
+    const normalizedTerm = searchTerm.toLocaleLowerCase();
+    const matchIndex = normalizedContent.indexOf(normalizedTerm);
+    if (matchIndex < 0) return null;
+
+    const start = Math.max(0, matchIndex - 34);
+    const end = Math.min(compact.length, matchIndex + searchTerm.length + 54);
+    const excerpt = compact.slice(start, end);
+    const normalizedExcerpt = excerpt.toLocaleLowerCase();
+    const parts: SnippetPart[] = [];
+    let cursor = 0;
+    let nextMatch = normalizedExcerpt.indexOf(normalizedTerm);
+    while (nextMatch >= 0) {
+      if (nextMatch > cursor) {
+        parts.push({ text: excerpt.slice(cursor, nextMatch), highlighted: false });
+      }
+      parts.push({
+        text: excerpt.slice(nextMatch, nextMatch + searchTerm.length),
+        highlighted: true,
+      });
+      cursor = nextMatch + searchTerm.length;
+      nextMatch = normalizedExcerpt.indexOf(normalizedTerm, cursor);
+    }
+    if (cursor < excerpt.length) {
+      parts.push({ text: excerpt.slice(cursor), highlighted: false });
+    }
+    return {
+      leadingEllipsis: start > 0,
+      trailingEllipsis: end < compact.length,
+      parts,
+    };
   }
 
   function clampOffset(value: number) {
@@ -329,6 +379,7 @@
             <h2 title={directory}><FolderClosed size={15} /><span>{directory}</span></h2>
             {#each group as document}
               {@const DocumentIcon = iconFor(document.kind)}
+              {@const snippet = contentSnippet(document)}
               <div
                 class="mobile-drawer-document"
                 class:active={document.active}
@@ -343,7 +394,14 @@
                 }}
               >
                 <DocumentIcon size={18} />
-                <span>{document.name}</span>
+                <span class="mobile-drawer-document-copy">
+                  <strong>{document.name}</strong>
+                  {#if snippet}
+                    <small class="mobile-drawer-snippet">
+                      {#if snippet.leadingEllipsis}…{/if}{#each snippet.parts as part}{#if part.highlighted}<mark>{part.text}</mark>{:else}{part.text}{/if}{/each}{#if snippet.trailingEllipsis}…{/if}
+                    </small>
+                  {/if}
+                </span>
                 {#if document.dirty}
                   <i class="mobile-drawer-dirty" aria-label={t.unsavedChanges()}></i>
                 {:else if !document.id}
@@ -490,7 +548,10 @@
   .mobile-drawer-group h2 { display: flex; align-items: center; gap: 7px; overflow: hidden; margin: 0 6px 6px; color: var(--md-editor-muted-fg); font-size: 12px; font-weight: 600; }
   .mobile-drawer-group h2 span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-drawer-document { position: relative; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; min-height: 48px; padding: 8px 10px; border: 0; border-radius: 12px; background: transparent; color: var(--md-editor-fg); text-align: left; font: inherit; cursor: pointer; }
-  .mobile-drawer-document > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-drawer-document-copy { display: grid; min-width: 0; gap: 3px; }
+  .mobile-drawer-document-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .mobile-drawer-snippet { display: -webkit-box; overflow: hidden; color: var(--md-editor-muted-fg); font-size: 12px; line-height: 1.45; white-space: normal; line-clamp: 2; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .mobile-drawer-snippet mark { padding: 0 2px; border-radius: 3px; background: color-mix(in srgb, var(--md-editor-accent) 28%, transparent); color: var(--md-editor-fg); font-weight: 650; }
   .mobile-drawer-document.active { background: color-mix(in srgb, var(--md-editor-accent) 15%, transparent); color: var(--md-editor-accent-strong); }
   .mobile-drawer-dirty { width: 8px; height: 8px; border-radius: 50%; background: var(--md-editor-accent-strong); }
   .mobile-drawer-remove { display: grid; width: 30px; height: 30px; place-items: center; border: 0; background: transparent; color: var(--md-editor-muted-fg); }
