@@ -20,6 +20,7 @@
   import type { ExternalFileChangeState, FileTreeNode, Tab } from '../types';
   import AppTitleBar from './AppTitleBar.svelte';
   import DocumentTabs from './DocumentTabs.svelte';
+  import MobileDocumentsSidebar from './MobileDocumentsSidebar.svelte';
   import EmptyWorkspace from './EmptyWorkspace.svelte';
   import EditorToolbar from './EditorToolbar.svelte';
   import EditorWorkspace from './EditorWorkspace.svelte';
@@ -209,6 +210,8 @@
   export let retryMarkdownLint: () => void;
   export let onMarkdownLintIssueSelect: (issue: MarkdownLintIssue) => boolean;
   export let appBootState: AppBootState;
+  const isMobileRuntime = /Android|iPhone|iPad|iPod/i.test(globalThis.navigator?.userAgent ?? '');
+  let mobileDocumentsOpen = false;
   export let onSourceScroll: (() => void) | undefined = undefined;
   export let onSemanticScroll: (() => void) | undefined = undefined;
 
@@ -260,6 +263,7 @@
 
 <div
   class="app-layout"
+  class:mobile-runtime={isMobileRuntime}
   class:focus-mode={focusMode}
   class:markdown-mini-mode={markdownMiniActive}
   class:resizing={isResizing}
@@ -274,7 +278,8 @@
   />
 
   {#if desktopEnabled}
-    <AppTitleBar
+    {#if !isMobileRuntime}
+      <AppTitleBar
       {interfaceLocale}
       {theme}
       {desktopEnabled}
@@ -327,7 +332,8 @@
       {softwareUpdateState}
       {openSoftwareUpdate}
       {openContextMenu}
-    />
+      />
+    {/if}
   {/if}
 
   <main
@@ -376,7 +382,7 @@
       style={`--toolbar-transition-duration: ${toolbarTransitionDuration}ms; --toolbar-reveal-delay: ${toolbarRevealDelay}ms`}
       aria-label={t.semanticEditorArea()}
     >
-      {#if hasOpenDocument}
+      {#if hasOpenDocument && !isMobileRuntime}
         <DocumentTabs
           {interfaceLocale}
           {tabs}
@@ -433,6 +439,8 @@
                   {setMode}
                   {toggleOutlineVisible}
                   {toggleToolbar}
+                  mobile={isMobileRuntime}
+                  openMobileDocuments={() => (mobileDocumentsOpen = true)}
                   inactive={!toolbarOverflowVisible || markdownMiniActive}
                   openSearchPanel={() => openSearchPanel(false)}
                 />
@@ -577,6 +585,19 @@
       />
     {/if}
   </main>
+
+  {#if isMobileRuntime}
+    <MobileDocumentsSidebar
+      bind:open={mobileDocumentsOpen}
+      {tabs}
+      {activeTabId}
+      {recentFiles}
+      showTrigger={!hasOpenDocument || effectiveToolbarHidden}
+      openRecentEntry={(path) => void openRecentEntry(path, 'file')}
+      removeRecentEntry={removeRecentEntry}
+      switchTab={switchTab}
+    />
+  {/if}
 </div>
 
 <style>
