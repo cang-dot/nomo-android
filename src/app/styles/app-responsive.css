@@ -79,8 +79,8 @@
 
   .document-layout {
     grid-template-columns: 1fr;
-    padding-right: max(16px, env(safe-area-inset-right));
-    padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: 20px;
+    padding-left: 20px;
   }
 
   .prosemirror-host,
@@ -90,55 +90,55 @@
   }
 }
 
-@media (max-width: 767px) {
-  .toolbar {
+.app-layout.mobile-runtime .toolbar {
     overflow-x: auto;
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
-  }
+}
 
-  .toolbar::-webkit-scrollbar {
-    display: none;
-  }
+.app-layout.mobile-runtime .toolbar::-webkit-scrollbar {
+  display: none;
+}
 
-  .document-layout {
-    padding-right: max(12px, env(safe-area-inset-right));
-    padding-left: max(12px, env(safe-area-inset-left));
-  }
+.app-layout.mobile-runtime .document-layout {
+  padding-right: max(12px, env(safe-area-inset-right));
+  padding-left: max(12px, env(safe-area-inset-left));
+}
 
-  button,
-  [role='button'] {
+@media (max-width: 767px) {
+  .app-layout.mobile-runtime button,
+  .app-layout.mobile-runtime [role='button'] {
     min-height: 40px;
   }
 }
 
-.workspace.mobile-runtime {
+.app-layout.mobile-runtime .workspace {
   --md-editor-effective-sidebar-width: 0px;
   grid-template-columns: minmax(0, 1fr);
   transition: none;
 }
 
-.workspace.mobile-runtime .editor-shell {
+.app-layout.mobile-runtime .editor-shell {
   margin-top: min(calc(env(safe-area-inset-top, 0px) + 8px), 26px);
   min-height: 0;
 }
 
-.workspace.mobile-runtime .editor-card {
+.app-layout.mobile-runtime .editor-card {
   min-height: calc(100% - min(calc(env(safe-area-inset-top, 0px) + 8px), 26px));
 }
 
 
-.workspace.mobile-runtime .rail,
-.workspace.mobile-runtime .sidebar-resizer {
+.app-layout.mobile-runtime .rail,
+.app-layout.mobile-runtime .sidebar-resizer {
   display: none;
 }
 
-.workspace.mobile-runtime .editor-card {
+.app-layout.mobile-runtime .editor-card {
   width: 100%;
   max-width: none;
 }
 
-.workspace.mobile-runtime .document-layout {
+.app-layout.mobile-runtime .document-layout {
   grid-template-columns: 1fr !important;
   justify-content: stretch;
   width: 100%;
@@ -146,17 +146,13 @@
   padding-left: max(12px, env(safe-area-inset-left));
 }
 
-.workspace.mobile-runtime .prosemirror-host,
-.workspace.mobile-runtime .source-editor,
-.workspace.mobile-runtime .front-matter-card,
-.workspace.mobile-runtime .editor-scroll-past-end {
+.app-layout.mobile-runtime .prosemirror-host,
+.app-layout.mobile-runtime .source-editor,
+.app-layout.mobile-runtime .front-matter-card,
+.app-layout.mobile-runtime .editor-scroll-past-end {
   grid-column: 1 !important;
   width: min(820px, 100%) !important;
   max-width: 100% !important;
-}
-
-.workspace.mobile-runtime .mobile-documents-trigger {
-  display: inline-flex !important;
 }
 
 .titlebar {

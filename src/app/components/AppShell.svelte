@@ -15,11 +15,12 @@
     MarkdownLintRuleSet,
     MarkdownLintState,
   } from '../../lib/markdown-lint/types';
-  import { ChevronDown, FolderClosed } from '@lucide/svelte';
+  import { ChevronDown } from '@lucide/svelte';
   import { onDestroy } from 'svelte';
   import type { ExternalFileChangeState, FileTreeNode, Tab } from '../types';
   import AppTitleBar from './AppTitleBar.svelte';
-  import DocumentsSidebar from './DocumentsSidebar.svelte';
+  import DocumentTabs from './DocumentTabs.svelte';
+  import MobileDocumentsSidebar from './MobileDocumentsSidebar.svelte';
   import EmptyWorkspace from './EmptyWorkspace.svelte';
   import EditorToolbar from './EditorToolbar.svelte';
   import EditorWorkspace from './EditorWorkspace.svelte';
@@ -209,44 +210,7 @@
   export let retryMarkdownLint: () => void;
   export let onMarkdownLintIssueSelect: (issue: MarkdownLintIssue) => boolean;
   export let appBootState: AppBootState;
-  let documentsSidebarOpen = false;
-  let sidebarDragX = 0;
-  let sidebarDragActive = false;
-  let sidebarDragTime = 0;
   const isMobileRuntime = /Android|iPhone|iPad|iPod/i.test(globalThis.navigator?.userAgent ?? '');
-  let swipeLayer: HTMLDivElement | null = null;
-
-  function beginDocumentsSwipe(event: TouchEvent) {
-    if (event.touches.length !== 1) return;
-    const touch = event.touches[0];
-    const edgeWidth = Math.max(28, Math.round(window.innerWidth * 0.035));
-    const shouldStart = documentsSidebarOpen || touch.clientX <= edgeWidth;
-    if (!shouldStart) return;
-    sidebarDragActive = true;
-    sidebarDragX = touch.clientX;
-    sidebarDragTime = performance.now();
-  }
-
-  function moveDocumentsSwipe(event: TouchEvent) {
-    if (!sidebarDragActive || event.touches.length !== 1) return;
-    const deltaX = event.touches[0].clientX - sidebarDragX;
-    if (Math.abs(deltaX) > 8) event.stopPropagation();
-  }
-
-  function endDocumentsSwipe(event: TouchEvent) {
-    if (!sidebarDragActive) return;
-    sidebarDragActive = false;
-    const touch = event.changedTouches[0];
-    const deltaX = touch.clientX - sidebarDragX;
-    const elapsed = Math.max(1, performance.now() - sidebarDragTime);
-    const fast = deltaX / elapsed > 0.5 || -deltaX / elapsed > 0.5;
-    if (!documentsSidebarOpen && (deltaX > 72 || (fast && deltaX > 24))) {
-      documentsSidebarOpen = true;
-    } else if (documentsSidebarOpen && deltaX < -48) {
-      documentsSidebarOpen = false;
-    }
-    sidebarDragX = 0;
-  }
   export let onSourceScroll: (() => void) | undefined = undefined;
   export let onSemanticScroll: (() => void) | undefined = undefined;
 
@@ -298,6 +262,7 @@
 
 <div
   class="app-layout"
+  class:mobile-runtime={isMobileRuntime}
   class:focus-mode={focusMode}
   class:markdown-mini-mode={markdownMiniActive}
   class:resizing={isResizing}
@@ -370,26 +335,10 @@
 
   <main
     class="workspace"
-    class:mobile-runtime={isMobileRuntime}
-    class:documents-sidebar-open={documentsSidebarOpen}
     style="--sidebar-width: {sidebarWidth}px"
     use:workspaceSidebarMotion={{ focusMode, isResizing }}
   >
-    {#if isMobileRuntime}
-      <div
-        bind:this={swipeLayer}
-        class="documents-swipe-layer"
-        class:active={documentsSidebarOpen}
-        aria-hidden="true"
-        on:touchstart={beginDocumentsSwipe}
-        on:touchmove={moveDocumentsSwipe}
-        on:touchend={endDocumentsSwipe}
-        on:touchcancel={() => { sidebarDragActive = false; }}
-      ></div>
-    {/if}
-
-      {#if !isMobileRuntime}
-        <ExplorerSidebar
+    <ExplorerSidebar
           {interfaceLocale}
           {currentFolderPath}
           {rootFolderExpanded}
@@ -418,8 +367,7 @@
           on:collapseAll
           on:deleteNode
           on:revealError
-        />
-      {/if}
+    />
 
     <section
       class="editor-shell"
@@ -431,26 +379,28 @@
       style={`--toolbar-transition-duration: ${toolbarTransitionDuration}ms; --toolbar-reveal-delay: ${toolbarRevealDelay}ms`}
       aria-label={t.semanticEditorArea()}
     >
-      <button class="mobile-documents-trigger" aria-label={t.file()} on:click={() => (documentsSidebarOpen = true)}>
-        <FolderClosed size={17} />
-      </button>
 
-      <DocumentsSidebar
-        open={documentsSidebarOpen}
-        {tabs}
-        {activeTabId}
-        {recentFiles}
-        on:close={() => (documentsSidebarOpen = false)}
-        on:openTab={(event) => {
-          documentsSidebarOpen = false;
-          void switchTab(event.detail);
-        }}
-        on:openPath={(event) => {
-          documentsSidebarOpen = false;
-          void openRecentEntry(event.detail, 'file');
-        }}
-        on:removeRecent={(event) => removeRecentEntry(event.detail)}
-      />
+      {#if hasOpenDocument && !isMobileRuntime}
+        <DocumentTabs
+          {interfaceLocale}
+          {tabs}
+          {activeTabId}
+          {previewTabId}
+          {switchTab}
+          {closeTab}
+          {pinPreviewTab}
+          {createNewFile}
+          {openFileDialog}
+          {openFolderDialog}
+          {openContextMenu}
+          copyContextText={copyContextText}
+          revealContextPath={revealContextPath}
+          {currentFolderPath}
+          on:closeOtherTabs
+          on:closeTabsToRight
+          on:closeAllTabs
+        />
+      {/if}
 
       {#if appBootState !== 'ready'}
         <div class="startup-loading" role="status" aria-live="polite">
@@ -631,6 +581,17 @@
       />
     {/if}
   </main>
+
+  {#if isMobileRuntime}
+    <MobileDocumentsSidebar
+      {tabs}
+      {activeTabId}
+      {recentFiles}
+      openRecentEntry={(path) => void openRecentEntry(path, 'file')}
+      removeRecentEntry={removeRecentEntry}
+      switchTab={switchTab}
+    />
+  {/if}
 </div>
 
 <style>
