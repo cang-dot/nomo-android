@@ -506,7 +506,7 @@ const githubLightTokens: ThemeColorTokens = {
   foreground: '#1F2328',
   mutedForeground: '#656D76',
   border: '#D0D7DE',
-  selection: '#B6E3FF',
+  selection: 'rgba(84, 174, 255, 0.4)',
   hoverBackground: '#EAEEF2',
   heading: '#1F2328',
   link: '#0969DA',
