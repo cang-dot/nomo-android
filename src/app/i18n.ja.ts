@@ -262,9 +262,14 @@ export const JA_JP_EXTRA_TRANSLATIONS = {
   positioning: '位置決め',
   positioningDescription:
     'ローカルファースト、Markdown ファーストの軽量デスクトップ Markdown エディター。',
-  platformStrategy: 'プラットフォーム戦略',
+  platformStrategy: '対応プラットフォーム',
   platformStrategyDescription:
-    'このバージョンでは、Windows ファイル、ウィンドウ、およびショートカットのエクスペリエンスが優先されます。',
+    'macOS と Windows をサポートし、各プラットフォームのネイティブなファイル、ウィンドウ、ショートカット体験を継続的に改善しています。',
+  githubRepository: 'GitHub リポジトリ',
+  githubRepositoryDescription: 'ソースコード、リリース、プロジェクトの更新を確認します。',
+  reportIssue: 'Issue を報告',
+  reportIssueDescription: '不具合を報告したり、機能を提案したりできます。',
+  externalLinkOpenFailed: 'リンクを開けませんでした。時間をおいて再試行してください。',
   updateCheck: 'アップデートチェック',
   updateCheckDescription: 'GitHub リリースから安定した Nomo アップデートを確認してください。',
   softwareUpdateCheckNow: 'アップデートを確認する',
