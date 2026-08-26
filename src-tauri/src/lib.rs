@@ -368,25 +368,41 @@ pub fn run() {
         .expect("error while building Nomo")
         .run(|_app, _event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { urls } = _event {
-                let paths = crate::window::external_open::collect_markdown_paths_from_urls(urls);
-                crate::app_logger::info(
-                    "ExternalOpen",
-                    &format!("收到 macOS Opened 事件：files={}", paths.len()),
-                );
-                if _app.try_state::<crate::config::ConfigManager>().is_none() {
-                    if let Err(error) =
-                        crate::window::external_open::queue_early_external_open(paths)
+            match _event {
+                tauri::RunEvent::Opened { urls } => {
+                    let paths =
+                        crate::window::external_open::collect_markdown_paths_from_urls(urls);
+                    crate::app_logger::info(
+                        "ExternalOpen",
+                        &format!("收到 macOS Opened 事件：files={}", paths.len()),
+                    );
+                    if _app.try_state::<crate::config::ConfigManager>().is_none() {
+                        if let Err(error) =
+                            crate::window::external_open::queue_early_external_open(paths)
+                        {
+                            crate::app_logger::error("ExternalOpen", &error);
+                        } else {
+                            crate::app_logger::info("ExternalOpen", "已暂存 setup 前文件打开请求");
+                        }
+                    } else if let Err(error) =
+                        crate::window::external_open::route_external_open(_app, paths)
                     {
                         crate::app_logger::error("ExternalOpen", &error);
-                    } else {
-                        crate::app_logger::info("ExternalOpen", "已暂存 setup 前文件打开请求");
                     }
-                } else if let Err(error) =
-                    crate::window::external_open::route_external_open(_app, paths)
-                {
-                    crate::app_logger::error("ExternalOpen", &error);
                 }
+                tauri::RunEvent::Reopen {
+                    has_visible_windows,
+                    ..
+                } => {
+                    crate::app_logger::info(
+                        "Window",
+                        &format!("收到 macOS Dock 重开事件：visible={has_visible_windows}"),
+                    );
+                    if !has_visible_windows {
+                        crate::window::tray::show_main_window(_app);
+                    }
+                }
+                _ => {}
             }
         });
 }
