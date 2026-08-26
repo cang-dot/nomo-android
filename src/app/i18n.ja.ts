@@ -99,9 +99,9 @@ export const JA_JP_EXTRA_TRANSLATIONS = {
     'テーマ ファイルが接続された後に利用可能になります。現在の CSS 変数は影響を受けません。',
   futureVersionSupport: '後で来ます',
   filesAndWindows: 'ファイルとウィンドウ',
-  folderOpenDefaultBehavior: 'デフォルトのフォルダーを開く動作',
+  folderOpenDefaultBehavior: 'デフォルトの開く動作',
   folderOpenDefaultBehaviorDescription:
-    '現在のウィンドウを再利用するか、常に新しいウィンドウを開くかを選択します。',
+    'メニュー、最近使った項目、システムのファイルマネージャーに適用されます。既存の対象と空のウィンドウは再利用されます。',
   askEveryTime: '毎回尋ねる',
   currentWindow: '現在のウィンドウ',
   newWindow: '新しいウィンドウ',

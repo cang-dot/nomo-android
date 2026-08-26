@@ -5,8 +5,8 @@
 
   export let interfaceLocale: string;
   export let open: boolean;
-  export let folderPath: string;
-  export let folderName: string;
+  export let targetPath: string;
+  export let targetName: string;
 
   let rememberChoice = false;
   const dispatch = createEventDispatcher<{
@@ -55,8 +55,8 @@
         on:click|stopPropagation
         on:keydown={handleKeydown}
       >
-        <h3 id="folder-dialog-title">{t.folderOpenQuestion({ folderName })}</h3>
-        <p class="folder-dialog-path">{folderPath}</p>
+        <h3 id="folder-dialog-title">{t.folderOpenQuestion({ folderName: targetName })}</h3>
+        <p class="folder-dialog-path">{targetPath}</p>
 
         <div class="folder-dialog-actions">
           <button type="button" class="folder-dialog-btn" on:click={() => choose('current-window')}>

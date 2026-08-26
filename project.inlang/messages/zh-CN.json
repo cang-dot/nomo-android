@@ -119,7 +119,7 @@
   "expandNamedHeading": "展开 {title}",
   "collapseNamedHeading": "折叠 {title}",
   "documentHasNoHeadings": "当前文档还没有标题",
-  "folderOpenQuestion": "如何打开文件夹 “{folderName}”？",
+  "folderOpenQuestion": "如何打开“{folderName}”？",
   "openInCurrentWindow": "当前窗口打开",
   "openInNewWindow": "新窗口打开",
   "rememberFolderOpenChoice": "不再询问，并记住我的选择",

@@ -107,6 +107,12 @@ pub fn run() {
                     }
                 }
                 if crate::window::external_open::is_document_window_label(label) {
+                    if let Some(registry) = window
+                        .app_handle()
+                        .try_state::<crate::window::open_targets::OpenTargetRegistry>()
+                    {
+                        registry.forget_window(label);
+                    }
                     crate::window::state::forget_markdown_mini_mode_window(label);
                     crate::window::tray::forget_window(window.app_handle(), label);
                 }
@@ -204,6 +210,7 @@ pub fn run() {
             let config = crate::config::ConfigManager::load_or_default(app.handle())
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
             app.manage(config);
+            app.manage(crate::window::open_targets::OpenTargetRegistry::default());
             let segmented_root = app
                 .path()
                 .app_data_dir()
@@ -328,6 +335,9 @@ pub fn run() {
             crate::file_system::image_assets::upload_image_via_picgo_server,
             crate::file_system::image_assets::test_picgo_connection,
             crate::window::commands::create_new_window,
+            crate::window::open_targets::sync_window_open_targets,
+            crate::window::open_targets::prepare_open_target_window,
+            crate::window::open_targets::release_open_target_reservation,
             crate::window::commands::open_settings_window,
             crate::window::commands::mark_settings_close_handler_ready,
             crate::window::commands::cancel_settings_close_request,

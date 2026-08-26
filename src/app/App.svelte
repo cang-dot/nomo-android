@@ -86,8 +86,11 @@
     exitMarkdownMiniMode,
     openSettingsWindow,
     refreshInterfaceLanguageChrome,
+    prepareOpenTargetWindow,
     setMarkdownMiniModePinned,
+    syncWindowOpenTargets,
     updateAppWindowTitle,
+    type OpenTarget,
   } from './services/desktopWindow';
   import { createImageInsertionHandlers } from './services/imageInsertion';
   import { readEditorClipboard, writeEditorClipboard } from './services/clipboard';
@@ -152,6 +155,7 @@
     type CodeBlockIndentPreference,
     type ExternalFileChangeBehavior,
     type InterfaceLanguagePreference,
+    type OpenDefaultBehavior,
     type SettingsUpdatedPayload,
     type ShortcutPreferences,
   } from './services/settings';
@@ -256,6 +260,10 @@
   type WritingStatsMetric = 'lines' | 'words' | 'chars';
   type CloseWindowAction = Exclude<CloseWindowBehavior, 'ask-every-time'>;
   type CloseWindowChoiceResult = { behavior: CloseWindowAction; remember: boolean } | null;
+  type OpenTargetChoiceResult = {
+    choice: 'current-window' | 'new-window';
+    remember: boolean;
+  } | null;
   type ZoomScrollAnchor = {
     pane: HTMLElement;
     element: HTMLElement;
@@ -331,10 +339,9 @@
   let copyMarkdownSyntaxEnabled = DEFAULT_APP_PREFERENCES.copyMarkdownSyntaxEnabled;
   let shortcutPreferences: ShortcutPreferences = { ...DEFAULT_APP_PREFERENCES.shortcutPreferences };
   let imageSettings: ImageHandlingSettings = { ...DEFAULT_IMAGE_HANDLING_SETTINGS };
-  let folderOpenDefaultBehavior: 'current-window' | 'new-window' | 'ask-every-time' =
-    DEFAULT_APP_PREFERENCES.folderOpenDefaultBehavior;
-  let folderOpenDialogPath: string | null = null;
-  let folderOpenDialogName = '';
+  let openDefaultBehavior: OpenDefaultBehavior = DEFAULT_APP_PREFERENCES.openDefaultBehavior;
+  let pendingOpenChoice: OpenTarget | null = null;
+  let pendingOpenChoiceResolver: ((result: OpenTargetChoiceResult) => void) | null = null;
   let editorHost: HTMLDivElement,
     fileInput: HTMLInputElement,
     sourceTextarea: HTMLTextAreaElement,
@@ -594,6 +601,8 @@
   let closeWindowBehavior = DEFAULT_APP_PREFERENCES.closeWindowBehavior;
   let externalFileChangeBehavior = DEFAULT_APP_PREFERENCES.externalFileChangeBehavior;
   let windowLabel = '';
+  let lastWindowOpenTargetsSignature = '';
+  let openTargetOperationQueue = Promise.resolve();
   let developerMode = DEFAULT_APP_PREFERENCES.developerMode;
 
   let markdownMiniActive = false;
@@ -611,6 +620,38 @@
       if (!currentTabIds.has(tabId)) {
         sessionReadingPositions.delete(tabId);
       }
+    }
+  }
+
+  function getCurrentWindowOpenTargetsSnapshot() {
+    const filePaths = Array.from(
+      new Set(tabs.map((tab) => tab.nativePath).filter((path): path is string => Boolean(path))),
+    ).sort();
+    return {
+      folderPath: currentFolderPath || null,
+      filePaths,
+    };
+  }
+
+  async function syncCurrentWindowOpenTargetsNow() {
+    if (!desktopEnabled || !windowLabel || appBootState !== 'ready') return;
+    const snapshot = getCurrentWindowOpenTargetsSnapshot();
+    const signature = JSON.stringify([snapshot.folderPath, snapshot.filePaths]);
+    await syncWindowOpenTargets(desktopEnabled, snapshot);
+    lastWindowOpenTargetsSignature = signature;
+  }
+
+  $: if (desktopEnabled && windowLabel && appBootState === 'ready') {
+    const snapshot = getCurrentWindowOpenTargetsSnapshot();
+    const filePaths = snapshot.filePaths;
+    const signature = JSON.stringify([currentFolderPath || null, filePaths]);
+    if (signature !== lastWindowOpenTargetsSignature) {
+      lastWindowOpenTargetsSignature = signature;
+      void syncWindowOpenTargets(desktopEnabled, snapshot).catch(() => {
+        if (lastWindowOpenTargetsSignature === signature) {
+          lastWindowOpenTargetsSignature = '';
+        }
+      });
     }
   }
 
@@ -1676,7 +1717,7 @@
   }
 
   const exitApp = () => requestExitApp();
-  const createNewWindow = (folderPath?: string) => createAppWindow(desktopEnabled, folderPath);
+  const createNewWindow = () => createAppWindow(desktopEnabled);
 
   function resolveFolderName(path: string): string {
     const normalized = path.replace(/\\/g, '/').replace(/\/$/, '');
@@ -1805,46 +1846,137 @@
     }
   }
 
-  async function openFolderInNewWindow(folderPath: string) {
-    await rememberNativeFolder(folderPath);
-    await refreshRecentFiles();
-    await createNewWindow(folderPath);
+  function isReusableInitialWindow() {
+    if (
+      appBootState !== 'ready' ||
+      currentFolderPath ||
+      workspaceRestorePreparation ||
+      deferredWorkspaceRestore ||
+      isSwitchingTab ||
+      markdownMiniActive ||
+      markdownMiniTransitioning ||
+      dirty ||
+      nativePath
+    ) {
+      return false;
+    }
+    if (tabs.length === 0) {
+      return true;
+    }
+    return tabs.length === 1 && isReusableUntitledTab(tabs[0]);
   }
 
-  async function handleFolderOpenChoice(
+  async function openTargetInCurrentWindow(target: OpenTarget) {
+    if (target.kind === 'folder') {
+      await openFolderInCurrentWindow(target.path);
+      return;
+    }
+    for (const path of target.paths) {
+      await openFilePathInCurrentWindow(path);
+    }
+  }
+
+  async function openTargetInNewWindow(target: OpenTarget) {
+    const decision = await prepareOpenTargetWindow(desktopEnabled, target, true);
+    if (decision.action === 'handled') {
+      return;
+    }
+    if (decision.action === 'activate-current') {
+      await openTargetInCurrentWindow(decision.target);
+      return;
+    }
+    if (decision.action === 'open-current') {
+      await openTargetInCurrentWindow(decision.target);
+      return;
+    }
+    const created = await createAppWindow(desktopEnabled, decision.windowLabel);
+    if (!created) {
+      statusMessage =
+        target.kind === 'folder' ? t.loadFolderTreeFailed() : t.openFileFailed();
+    }
+  }
+
+  function enqueueOpenTargetOperation<T>(operation: () => Promise<T>) {
+    const result = openTargetOperationQueue.then(operation);
+    openTargetOperationQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  function openTargetWithBehavior(target: OpenTarget) {
+    return enqueueOpenTargetOperation(() => routeOpenTargetWithBehavior(target));
+  }
+
+  async function routeOpenTargetWithBehavior(target: OpenTarget) {
+    await syncCurrentWindowOpenTargetsNow();
+    const decision = await prepareOpenTargetWindow(desktopEnabled, target, false);
+    if (decision.action === 'handled') {
+      return;
+    }
+    if (decision.action === 'activate-current') {
+      await openTargetInCurrentWindow(decision.target);
+      return;
+    }
+    const remainingTarget = decision.target;
+
+    if (isReusableInitialWindow() || openDefaultBehavior === 'current-window') {
+      await openTargetInCurrentWindow(remainingTarget);
+      return;
+    }
+    if (openDefaultBehavior === 'new-window') {
+      await openTargetInNewWindow(remainingTarget);
+      return;
+    }
+
+    const result = await requestOpenTargetChoice(remainingTarget);
+    if (!result) return;
+    if (result.remember) {
+      openDefaultBehavior = result.choice;
+      await updateAppSetting('openDefaultBehavior', result.choice).catch(() => undefined);
+    }
+    if (result.choice === 'current-window') {
+      await openTargetInCurrentWindow(remainingTarget);
+    } else {
+      await openTargetInNewWindow(remainingTarget);
+    }
+  }
+
+  function openFolderWithBehavior(folderPath: string) {
+    return openTargetWithBehavior({ kind: 'folder', path: folderPath });
+  }
+
+  function requestOpenTargetChoice(target: OpenTarget) {
+    pendingOpenChoice = target;
+    return new Promise<OpenTargetChoiceResult>((resolve) => {
+      pendingOpenChoiceResolver = resolve;
+    });
+  }
+
+  function resolveOpenTargetChoice(result: OpenTargetChoiceResult) {
+    const resolve = pendingOpenChoiceResolver;
+    pendingOpenChoice = null;
+    pendingOpenChoiceResolver = null;
+    resolve?.(result);
+  }
+
+  function handleOpenTargetChoice(
     event: CustomEvent<{ choice: 'current-window' | 'new-window'; remember: boolean }>,
   ) {
-    const { choice, remember } = event.detail;
-    folderOpenDialogPath = null;
-
-    if (!folderOpenDialogName) return;
-
-    if (remember) {
-      folderOpenDefaultBehavior = choice;
-      await updateAppSetting('folderOpenDefaultBehavior', choice).catch(() => undefined);
-    }
-
-    if (choice === 'current-window') {
-      await openFolderInCurrentWindow(folderOpenDialogName);
-    } else {
-      await openFolderInNewWindow(folderOpenDialogName);
-    }
-    folderOpenDialogName = '';
+    resolveOpenTargetChoice(event.detail);
   }
 
-  function showFolderOpenDialog(folderPath: string) {
-    folderOpenDialogName = folderPath;
-    folderOpenDialogPath = folderPath;
+  function getOpenTargetDialogPath(target: OpenTarget | null) {
+    if (!target) return '';
+    return target.kind === 'folder' ? target.path : target.paths.join('\n');
   }
 
-  async function openFolderWithBehavior(folderPath: string) {
-    if (folderOpenDefaultBehavior === 'current-window') {
-      await openFolderInCurrentWindow(folderPath);
-    } else if (folderOpenDefaultBehavior === 'new-window') {
-      await openFolderInNewWindow(folderPath);
-    } else {
-      showFolderOpenDialog(folderPath);
-    }
+  function getOpenTargetDialogName(target: OpenTarget | null) {
+    if (!target) return '';
+    if (target.kind === 'folder') return resolveFolderName(target.path);
+    const firstName = target.paths[0]?.replace(/\\/g, '/').split('/').pop() ?? '';
+    return target.paths.length === 1 ? firstName : `${firstName}…`;
   }
 
   async function openFolderDialog() {
@@ -1872,7 +2004,7 @@
     if (!(await ensureExplorerPathExists(path, t.fileMissing()))) {
       return;
     }
-    await openRecentFile(path);
+    await openTargetWithBehavior({ kind: 'documents', paths: [path] });
   }
 
   async function clearRecentEntriesList() {
@@ -3178,8 +3310,34 @@
     openSettingsWindow(desktopEnabled);
   }
 
+  function openPreviewFile(path: string) {
+    return enqueueOpenTargetOperation(() => routePreviewFile(path));
+  }
+
+  async function routePreviewFile(path: string) {
+    if (!desktopEnabled) return false;
+    await syncCurrentWindowOpenTargetsNow();
+    const decision = await prepareOpenTargetWindow(
+      desktopEnabled,
+      { kind: 'documents', paths: [path] },
+      false,
+    ).catch((error) => {
+      showVisibleError(error, t.previewOpenFailed());
+      return null;
+    });
+    if (!decision || decision.action === 'handled') return false;
+    if (decision.action === 'activate-current') {
+      if (decision.target.kind !== 'documents' || decision.target.paths.length === 0) return false;
+      await openPreviewFileInCurrentWindow(decision.target.paths[0]);
+      return true;
+    }
+    if (decision.target.kind !== 'documents' || decision.target.paths.length === 0) return false;
+    await openPreviewFileInCurrentWindow(decision.target.paths[0]);
+    return true;
+  }
+
   // 打开预览标签页（文件树单击）
-  async function openPreviewFile(path: string) {
+  async function openPreviewFileInCurrentWindow(path: string) {
     if (!desktopEnabled) return;
     const requestGeneration = invalidatePendingPreviewOpen();
     if (!(await ensureExplorerPathExists(path, t.fileMissing()))) {
@@ -3843,15 +4001,12 @@
     }
     const path = await pickDocumentPathWithDialog();
     if (!path) return;
-    await openDocumentPath(path, {
-      message: t.openedByTauri(),
-      fallbackMessage: t.openFileFailed(),
-    }).catch((error) => {
+    await openTargetWithBehavior({ kind: 'documents', paths: [path] }).catch((error) => {
       showVisibleError(error, t.openFileFailed());
     });
   }
 
-  async function openRecentFile(path: string) {
+  async function openFilePathInCurrentWindow(path: string) {
     if (!desktopEnabled) return;
     await openDocumentPath(path, {
       message: t.recentFileOpened(),
@@ -4510,7 +4665,7 @@
       if (result) {
         await loadFolder(currentFolderPath);
         expandAncestors(targetPath, currentFolderPath);
-        openRecentEntry(targetPath, 'file');
+        openFilePathInCurrentWindow(targetPath);
       }
     }
   }
@@ -4587,7 +4742,7 @@
     lineHeight = preferences.lineHeight;
     contentWidthPercent = preferences.contentWidthPercent;
     imageSettings = preferences.imageHandlingSettings;
-    folderOpenDefaultBehavior = preferences.folderOpenDefaultBehavior;
+    openDefaultBehavior = preferences.openDefaultBehavior;
     filePreviewEnabled = preferences.filePreviewEnabled;
     closeWindowBehavior = preferences.closeWindowBehavior;
     externalFileChangeBehavior = preferences.externalFileChangeBehavior;
@@ -4676,7 +4831,7 @@
       lineHeight,
       contentWidthPercent,
       largeDocumentLimit,
-      folderOpenDefaultBehavior,
+      openDefaultBehavior,
       filePreviewEnabled,
       closeWindowBehavior,
       externalFileChangeBehavior,
@@ -5045,6 +5200,7 @@
   });
 
   onDestroy(() => {
+    resolveOpenTargetChoice(null);
     appearanceRuntimeActive = false;
     cancelPendingReadingPositionRestore();
     clearReadingPositionSaveTimer();
@@ -5665,8 +5821,8 @@
     }
 
     const supportedPaths = paths.filter((path) => /\.(md|markdown|txt|json)$/i.test(path));
-    for (const path of supportedPaths) {
-      await openRecentEntry(path, 'file');
+    if (supportedPaths.length > 0) {
+      await openTargetWithBehavior({ kind: 'documents', paths: supportedPaths });
     }
   }
 
@@ -5695,7 +5851,7 @@
     }
 
     for (const path of supportedPaths) {
-      await openRecentFile(path);
+      await openFilePathInCurrentWindow(path);
     }
   }
 
@@ -6139,14 +6295,11 @@
 
 <FolderOpenDialog
   {interfaceLocale}
-  open={folderOpenDialogPath !== null}
-  folderPath={folderOpenDialogPath ?? ''}
-  folderName={resolveFolderName(folderOpenDialogPath ?? '')}
-  on:choose={handleFolderOpenChoice}
-  on:cancel={() => {
-    folderOpenDialogPath = null;
-    folderOpenDialogName = '';
-  }}
+  open={pendingOpenChoice !== null}
+  targetPath={getOpenTargetDialogPath(pendingOpenChoice)}
+  targetName={getOpenTargetDialogName(pendingOpenChoice)}
+  on:choose={handleOpenTargetChoice}
+  on:cancel={() => resolveOpenTargetChoice(null)}
 />
 
 {#if contextMenuOpen}

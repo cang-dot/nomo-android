@@ -36,7 +36,7 @@
     type CodeBlockIndentPreference,
     type EditorModePreference,
     type ExternalFileChangeBehavior,
-    type FolderOpenDefaultBehavior,
+    type OpenDefaultBehavior,
     type InterfaceLanguagePreference,
     type MarkdownLintRuleSet,
     type RenderModePreference,
@@ -969,8 +969,8 @@
     updateDraft({ documentStyleId });
   }
 
-  function setFolderBehavior(folderOpenDefaultBehavior: FolderOpenDefaultBehavior) {
-    updateDraft({ folderOpenDefaultBehavior });
+  function setOpenBehavior(openDefaultBehavior: OpenDefaultBehavior) {
+    updateDraft({ openDefaultBehavior });
   }
 
   function setCloseWindowBehavior(closeWindowBehavior: CloseWindowBehavior) {
@@ -1961,21 +1961,21 @@
                 <div class="triple-control" role="group" aria-label={t.folderOpenDefaultBehavior()}>
                   <button
                     type="button"
-                    class:active={draftSettings.folderOpenDefaultBehavior === 'ask-every-time'}
-                    aria-pressed={draftSettings.folderOpenDefaultBehavior === 'ask-every-time'}
-                    on:click={() => setFolderBehavior('ask-every-time')}>{t.askEveryTime()}</button
+                    class:active={draftSettings.openDefaultBehavior === 'ask-every-time'}
+                    aria-pressed={draftSettings.openDefaultBehavior === 'ask-every-time'}
+                    on:click={() => setOpenBehavior('ask-every-time')}>{t.askEveryTime()}</button
                   >
                   <button
                     type="button"
-                    class:active={draftSettings.folderOpenDefaultBehavior === 'current-window'}
-                    aria-pressed={draftSettings.folderOpenDefaultBehavior === 'current-window'}
-                    on:click={() => setFolderBehavior('current-window')}>{t.currentWindow()}</button
+                    class:active={draftSettings.openDefaultBehavior === 'current-window'}
+                    aria-pressed={draftSettings.openDefaultBehavior === 'current-window'}
+                    on:click={() => setOpenBehavior('current-window')}>{t.currentWindow()}</button
                   >
                   <button
                     type="button"
-                    class:active={draftSettings.folderOpenDefaultBehavior === 'new-window'}
-                    aria-pressed={draftSettings.folderOpenDefaultBehavior === 'new-window'}
-                    on:click={() => setFolderBehavior('new-window')}>{t.newWindow()}</button
+                    class:active={draftSettings.openDefaultBehavior === 'new-window'}
+                    aria-pressed={draftSettings.openDefaultBehavior === 'new-window'}
+                    on:click={() => setOpenBehavior('new-window')}>{t.newWindow()}</button
                   >
                 </div>
               </div>

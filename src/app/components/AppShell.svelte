@@ -127,7 +127,7 @@
   export let openFileDialog: () => void;
   export let openFolderDialog: () => void;
   export let openRecentEntry: (path: string, entryType: 'file' | 'folder') => void;
-  export let openPreviewFile: (path: string) => void;
+  export let openPreviewFile: (path: string) => void | boolean | Promise<void | boolean>;
   export let pinPreviewFile: () => void;
   export let clearRecentEntriesList: () => void;
   export let removeRecentEntry: (path: string) => void;

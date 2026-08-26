@@ -6,6 +6,21 @@ import {
 import { createPerfTimer, logError, logInfo } from '../../lib/services/logger';
 import { getPlatformCapabilities } from './platform';
 
+export type OpenTarget =
+  | { kind: 'documents'; paths: string[] }
+  | { kind: 'folder'; path: string };
+
+export type OpenTargetRouteDecision =
+  | { action: 'handled' }
+  | { action: 'activate-current'; target: OpenTarget }
+  | { action: 'open-current'; target: OpenTarget }
+  | { action: 'create-window'; windowLabel: string; target: OpenTarget };
+
+export interface WindowOpenTargetsSnapshot {
+  folderPath?: string | null;
+  filePaths: string[];
+}
+
 function getNewWindowChromeOptions() {
   const platformCapabilities = getPlatformCapabilities();
 
@@ -61,7 +76,7 @@ export async function exitApp(desktopEnabled: boolean) {
 
 export async function createAppWindow(
   desktopEnabled: boolean,
-  pendingFolder?: string,
+  preparedWindowLabel?: string,
 ): Promise<string | undefined> {
   if (!desktopEnabled) {
     return undefined;
@@ -72,8 +87,8 @@ export async function createAppWindow(
   const timer = createPerfTimer('DesktopWindow', '创建新窗口');
   try {
     const platformCapabilities = getPlatformCapabilities();
-    logInfo('DesktopWindow', '开始创建新窗口', { pendingFolder });
-    const windowId = await invoke<string>('create_new_window', { pendingFolder });
+    logInfo('DesktopWindow', '开始创建新窗口', { preparedWindowLabel });
+    const windowId = preparedWindowLabel ?? (await invoke<string>('create_new_window'));
     const appWindow = new WebviewWindow(windowId, {
       url: '/',
       title: 'Nomo',
@@ -106,10 +121,41 @@ export async function createAppWindow(
     logInfo('DesktopWindow', '新窗口创建完成', { windowId });
     return windowId;
   } catch (error) {
+    if (preparedWindowLabel) {
+      await invoke('release_open_target_reservation', {
+        windowLabel: preparedWindowLabel,
+      }).catch(() => undefined);
+    }
     timer.end({ failed: true });
     logError('DesktopWindow', 'Failed to create new window', { error: formatError(error) });
     return undefined;
   }
+}
+
+export async function prepareOpenTargetWindow(
+  desktopEnabled: boolean,
+  target: OpenTarget,
+  createIfMissing: boolean,
+): Promise<OpenTargetRouteDecision> {
+  if (!desktopEnabled) {
+    return { action: 'open-current', target };
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<OpenTargetRouteDecision>('prepare_open_target_window', {
+    target,
+    createIfMissing,
+  });
+}
+
+export async function syncWindowOpenTargets(
+  desktopEnabled: boolean,
+  snapshot: WindowOpenTargetsSnapshot,
+): Promise<void> {
+  if (!desktopEnabled) {
+    return;
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('sync_window_open_targets', { input: snapshot });
 }
 
 export async function openSettingsWindow(desktopEnabled: boolean) {

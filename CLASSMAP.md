@@ -30,6 +30,7 @@
 | Markdown 文档小窗 | `src/app/App.svelte` | `src/app/components/AppShell.svelte`, `src/app/components/AppTitleBar.svelte`, `src/app/components/MarkdownMiniLargePreview.svelte`, `src/app/services/desktopWindow.ts`, `src-tauri/src/window/state.rs` | 修改小窗进入/返回、置顶、只读降级、快捷键或窗口几何恢复 |
 | 全局滚动条显隐 | `src/app/services/scrollbarVisibility.ts` | `src/main.ts`, `src/app/styles/global.css`, `src/app/styles/app-layout.css`, `src/app/styles/editor-segmented.css` | 修改滚动时显示、边缘触发、延时隐藏或局部滚动容器覆盖 |
 | 外部打开路由 | `src-tauri/src/window/external_open.rs` | `src-tauri/src/lib.rs` | 单实例/启动参数/macOS open 事件 |
+| 跨窗口打开目标去重 | `src-tauri/src/window/open_targets.rs` | `src/app/App.svelte`, `src/app/services/desktopWindow.ts`, `src-tauri/src/window/external_open.rs` | 修改文件/文件夹打开优先级、空窗口复用、窗口聚焦或目标预留 |
 
 ### 编辑器核心（ProseMirror）
 
@@ -334,6 +335,7 @@
 - 加载设置和 v2 工作区状态，协调草稿恢复与启动冲突选择
 - 协调主题运行时初始化、系统明暗同步、快捷键切换和保存失败回滚
 - 协调打开、保存、自动保存、模式切换、外部文件打开、关闭确认
+- 统一路由菜单、最近记录、系统文件管理器和文件树打开请求，并串行协调空窗口复用与跨窗口去重
 - 订阅编辑器内容变化并同步 dirty/统计/大纲状态
 - 工作区恢复后发起一次启动更新检查，并按目标窗口协调通知卡片与安装确认
 - 协调当前文档在同一窗口内进入/返回 Markdown 小窗，并复用原编辑器、撤销栈和自动保存状态
@@ -880,6 +882,7 @@
 - 设置归一化、加载、保存和外观模型一次性迁移
 - 无效主题、文档样式与旧字段映射的持久化修复
 - 工具栏显示偏好与可自定义快捷键的默认值和持久化
+- 统一打开行为偏好的新键持久化，以及旧 `folderOpenDefaultBehavior` 的读取兼容
 
 **Does not own：**
 - 不拥有设置 UI（在 SettingsWindow.svelte 中）
@@ -1894,6 +1897,32 @@
 
 ---
 
+### `src-tauri/src/window/open_targets.rs`
+
+**Kind:** service / registry
+
+**Owns:**
+- 维护进程内文档窗口当前文件夹、全部已打开文件及在建窗口目标预留
+- 规范化绝对路径，原子判断目标归属并聚焦已有窗口或生成唯一新窗口标签
+- 提供同步目标、准备打开窗口和创建失败释放预留的 IPC
+
+**Does not own:**
+- 不拥有具体文件、文件夹加载与标签定位逻辑（在 `src/app/App.svelte` 中）
+- 不拥有启动参数和单实例事件解析（在 `external_open.rs` 中）
+
+**Called by:** `src/app/services/desktopWindow.ts`, `src-tauri/src/lib.rs`, `src-tauri/src/window/commands.rs`
+
+**Depends on:** `src-tauri/src/window/external_open.rs`, `src-tauri/src/config/commands.rs`, Tauri 窗口与事件系统
+
+**Change this when:**
+- 修改跨窗口目标匹配、预留超时、已有窗口激活或新窗口标签规则
+
+**Related tests:** —
+
+**Confidence:** high
+
+---
+
 ### `src-tauri/src/window/external_open.rs`
 
 **Kind:** service
@@ -2395,17 +2424,17 @@
 **Kind:** component
 
 **Owns:**
-- 打开文件夹窗口选择对话框：当前窗口 vs 新窗口、记住选择
+- 打开文件或文件夹的窗口选择对话框：当前窗口 vs 新窗口、记住选择
 
 **Does not own:**
-- 不拥有文件夹打开逻辑（通过 dispatch 事件传给父组件）
+- 不拥有目标打开逻辑（通过 dispatch 事件传给父组件）
 
 **Called by:** `src/app/components/AppShell.svelte`
 
 **Depends on:** `src/app/i18n.ts`
 
 **Change this when:**
-- 修改打开文件夹选择 UI
+- 修改打开目标的窗口选择 UI
 
 **Related tests:** —
 
@@ -3366,6 +3395,7 @@
 **Owns:**
 - 桌面窗口关闭、退出与设置窗口打开操作
 - 新窗口创建时的 chrome 选项（macOS overlay / Windows 无装饰）及 Windows 隐藏初始化
+- 打开目标联合类型、窗口目标同步/准备 IPC 与预留窗口创建失败清理
 - Markdown 小窗进入、返回和置顶 IPC 的前端适配
 
 **Does not own:**
