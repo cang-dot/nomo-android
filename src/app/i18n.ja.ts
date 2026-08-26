@@ -526,6 +526,8 @@ export const JA_JP_EXTRA_TRANSLATIONS = {
   maximizeWindow: 'ウィンドウを最大化',
   restoreWindow: '復元ウィンドウ',
   copyCode: 'コードをコピーする',
+  expandCodeBlock: 'コードブロックを展開',
+  collapseCodeBlock: 'コードブロックを折りたたむ',
   copied: 'コピーされました',
   copyFailed: 'コピーに失敗しました',
   chooseLanguage: '言語を選択してください',

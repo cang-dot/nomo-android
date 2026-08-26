@@ -3,6 +3,7 @@ import type { Node as ProseMirrorNode } from 'prosemirror-model';
 import { EditorState, TextSelection, type Transaction } from 'prosemirror-state';
 import { EditorView } from 'prosemirror-view';
 import { deleteCodeBlockBeforeCursor } from './codeBlockCommands';
+import { applyInterfaceLanguagePreference } from '../../app/i18n';
 import { parseMarkdown, serializeMarkdown } from './markdown';
 import { CodeBlockNodeView } from './nodeViews/CodeBlockNodeView';
 import { setCodeBlockTokenizer } from './renderers';
@@ -19,6 +20,42 @@ function createDocWithCodeBlockAndParagraph(paragraphText = ''): {
   return {
     doc: schema.nodes.doc.create(null, [codeBlock, paragraph]),
     codeBlock,
+  };
+}
+
+function createCodeLines(lineCount: number): string {
+  return Array.from(
+    { length: lineCount },
+    (_, index) => `const line${index + 1} = ${index + 1};`,
+  ).join('\n');
+}
+
+function mountCodeBlock(code: string) {
+  const target = document.createElement('div');
+  document.body.appendChild(target);
+  const view = new EditorView(target, {
+    state: EditorState.create({ doc: parseMarkdown(`\`\`\`ts\n${code}\n\`\`\``) }),
+    nodeViews: {
+      code_block: (node, editorView, getPos) =>
+        new CodeBlockNodeView(node, editorView, getPos as () => number),
+    },
+  });
+  const card = target.querySelector<HTMLElement>('.code-card');
+  const expandButton = target.querySelector<HTMLButtonElement>('.code-expand-button');
+  if (!card || !expandButton) {
+    view.destroy();
+    target.remove();
+    throw new Error('代码块展开控件未渲染');
+  }
+  return {
+    target,
+    view,
+    card,
+    expandButton,
+    destroy() {
+      view.destroy();
+      target.remove();
+    },
   };
 }
 
@@ -135,6 +172,102 @@ describe('code_block markdown 解析', () => {
     // 空代码块可能不被解析（取决于 markdown-it 配置）
     // 此测试记录当前行为
     expect(typeof found).toBe('boolean');
+  });
+});
+
+describe('code_block 展开与收起', () => {
+  it('仅为超过 24 行的代码块显示展开按钮', () => {
+    const shortBlock = mountCodeBlock(createCodeLines(24));
+    expect(shortBlock.expandButton.hidden).toBe(true);
+    shortBlock.destroy();
+
+    const longBlock = mountCodeBlock(createCodeLines(25));
+    expect(longBlock.expandButton.hidden).toBe(false);
+    expect(longBlock.card.classList.contains('is-expanded')).toBe(false);
+    expect(longBlock.expandButton.getAttribute('aria-expanded')).toBe('false');
+    expect(longBlock.expandButton.querySelector('svg')?.dataset.icon).toBe('chevrons-down');
+    longBlock.destroy();
+  });
+
+  it('在展示态和编辑态之间保留同一个展开状态', () => {
+    const mounted = mountCodeBlock(createCodeLines(25));
+
+    mounted.expandButton.click();
+    expect(mounted.card.classList.contains('is-expanded')).toBe(true);
+    expect(mounted.expandButton.getAttribute('aria-expanded')).toBe('true');
+    expect(mounted.expandButton.querySelector('svg')?.dataset.icon).toBe('chevrons-up');
+
+    mounted.card
+      .querySelector<HTMLElement>('.code-content')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const textarea = mounted.card.querySelector<HTMLTextAreaElement>('.code-input');
+    expect(textarea).not.toBeNull();
+    expect(mounted.card.classList.contains('is-editing')).toBe(true);
+    expect(mounted.card.classList.contains('is-expanded')).toBe(true);
+    expect(textarea?.rows).toBe(25);
+
+    textarea?.focus();
+    const mouseDownAccepted = mounted.expandButton.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
+    );
+    expect(mouseDownAccepted).toBe(false);
+    expect(document.activeElement).toBe(textarea);
+
+    mounted.expandButton.click();
+    expect(mounted.card.classList.contains('is-editing')).toBe(true);
+    expect(mounted.card.classList.contains('is-expanded')).toBe(false);
+    expect(textarea?.rows).toBe(24);
+    expect(document.activeElement).toBe(textarea);
+
+    mounted.expandButton.click();
+    textarea?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(mounted.card.classList.contains('is-editing')).toBe(false);
+    expect(mounted.card.classList.contains('is-expanded')).toBe(true);
+    mounted.destroy();
+  });
+
+  it('内容缩短后隐藏按钮并在再次变长时恢复默认收起', () => {
+    const mounted = mountCodeBlock(createCodeLines(25));
+    mounted.expandButton.click();
+    mounted.card
+      .querySelector<HTMLElement>('.code-content')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const textarea = mounted.card.querySelector<HTMLTextAreaElement>('.code-input');
+    expect(textarea).not.toBeNull();
+
+    if (textarea) {
+      textarea.value = createCodeLines(24);
+      textarea.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      expect(mounted.expandButton.hidden).toBe(true);
+      expect(mounted.card.classList.contains('is-expanded')).toBe(false);
+
+      textarea.value = createCodeLines(25);
+      textarea.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      expect(mounted.expandButton.hidden).toBe(false);
+      expect(mounted.expandButton.getAttribute('aria-expanded')).toBe('false');
+      expect(textarea.rows).toBe(24);
+    }
+    mounted.destroy();
+  });
+
+  it('切换界面语言时更新展开按钮的辅助文案', () => {
+    applyInterfaceLanguagePreference('en-US');
+    const mounted = mountCodeBlock(createCodeLines(25));
+    try {
+      expect(mounted.expandButton.title).toBe('Expand code block');
+      expect(mounted.expandButton.getAttribute('aria-label')).toBe('Expand code block');
+
+      applyInterfaceLanguagePreference('zh-CN');
+      expect(mounted.expandButton.title).toBe('展开代码块');
+      expect(mounted.expandButton.getAttribute('aria-label')).toBe('展开代码块');
+
+      mounted.expandButton.click();
+      expect(mounted.expandButton.title).toBe('收起代码块');
+      expect(mounted.expandButton.getAttribute('aria-label')).toBe('收起代码块');
+    } finally {
+      mounted.destroy();
+      applyInterfaceLanguagePreference('en-US');
+    }
   });
 });
 

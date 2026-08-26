@@ -656,6 +656,10 @@
   --code-font-size: 13px;
   --code-line-height: 18px;
   --code-font: var(--code-font-size) / var(--code-line-height) var(--md-editor-font-mono);
+  --code-collapsed-max-height: min(
+    calc(24 * var(--code-line-height) + 2 * var(--code-content-padding-block)),
+    60vh
+  );
   position: relative;
   width: 100%;
   min-width: 0;
@@ -701,14 +705,31 @@
   cursor: pointer;
 }
 
-.code-card .code-copy-button {
+.code-card .code-copy-button,
+.code-card .code-expand-button {
   width: 32px;
   min-width: 32px;
   padding: 0;
 }
 
-.code-card .code-copy-button svg {
+.code-card .code-copy-button svg,
+.code-card .code-expand-button svg {
   display: block;
+}
+
+.code-card .code-expand-button[hidden] {
+  display: none;
+}
+
+.code-card .code-expand-button:hover {
+  border-color: color-mix(in srgb, var(--md-editor-accent) 55%, var(--md-editor-code-border));
+  background: color-mix(in srgb, var(--md-editor-accent) 12%, var(--md-editor-code-bg));
+  color: var(--md-editor-accent);
+}
+
+.code-card .code-expand-button:focus-visible {
+  outline: 2px solid var(--md-editor-accent);
+  outline-offset: 2px;
 }
 
 .code-card .code-copy-button.is-copied {
@@ -815,7 +836,11 @@
   width: 100%;
   min-width: 0;
   overflow: hidden;
-  max-height: min(calc(24 * var(--code-line-height) + 2 * var(--code-content-padding-block)), 60vh);
+  max-height: var(--code-collapsed-max-height);
+}
+
+.code-card.is-expanded .code-body {
+  max-height: none;
 }
 
 .line-numbers-gutter {
@@ -881,8 +906,12 @@
   margin-left: var(--code-gutter-width, 32px); /* JS 动态覆盖 */
   overflow: hidden; /* 裁剪高亮层与 textarea 的滚动区域 */
   position: relative;
-  max-height: min(calc(24 * var(--code-line-height) + 2 * var(--code-content-padding-block)), 60vh);
+  max-height: var(--code-collapsed-max-height);
   border-radius: 0;
+}
+
+.code-card.is-expanded .code-edit-area {
+  max-height: none;
 }
 
 .prosemirror-host .ProseMirror .code-card .code-highlight-layer {
