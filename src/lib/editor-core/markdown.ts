@@ -7,7 +7,7 @@ import {
   MarkdownParser,
   MarkdownSerializer,
 } from 'prosemirror-markdown';
-import { Fragment, type Node as ProseMirrorNode } from 'prosemirror-model';
+import { Fragment, type Node as ProseMirrorNode, type ResolvedPos } from 'prosemirror-model';
 import { schema, type TableColumnAlignment } from './schema';
 import { classifyHtmlBlock } from './html/htmlClassifier';
 import { parseHtmlContent } from './html/htmlToPmLogic';
@@ -793,6 +793,11 @@ export function serializeMarkdownSelection(
     return null;
   }
 
+  const listTextblock = extractSingleListTextblockSelection(doc, from, to);
+  if (listTextblock) {
+    return serializeMarkdown(schema.nodes.doc.create(null, listTextblock));
+  }
+
   const extraction: MarkdownSelectionExtraction = {
     nodes: [],
     fallbackToPlainText: false,
@@ -806,6 +811,46 @@ export function serializeMarkdownSelection(
   }
 
   return serializeMarkdown(schema.nodes.doc.create(null, extraction.nodes));
+}
+
+/**
+ * 列表序号和项目符号属于外层列表结构，不是正文里的可选字符。
+ * 当选区始终位于同一个列表正文块时，只复制该正文块，避免完整选中文字后补回未选中的列表标记。
+ */
+function extractSingleListTextblockSelection(
+  doc: ProseMirrorNode,
+  from: number,
+  to: number,
+): ProseMirrorNode | null {
+  const $from = doc.resolve(from);
+  const $to = doc.resolve(to);
+  if (!$from.sameParent($to) || !$from.parent.isTextblock || !isInsideListItem($from)) {
+    return null;
+  }
+
+  const textblock = $from.parent;
+  const contentFrom = $from.start($from.depth);
+  const contentTo = $from.end($from.depth);
+  if (from <= contentFrom && to >= contentTo) {
+    return textblock;
+  }
+
+  const localFrom = Math.max(0, from - contentFrom);
+  const localTo = Math.min(textblock.content.size, to - contentFrom);
+  if (localFrom >= localTo) {
+    return null;
+  }
+
+  return schema.nodes.paragraph.create(null, textblock.content.cut(localFrom, localTo));
+}
+
+function isInsideListItem($pos: ResolvedPos): boolean {
+  for (let depth = $pos.depth - 1; depth > 0; depth -= 1) {
+    if ($pos.node(depth).type === schema.nodes.list_item) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function appendSelectedMarkdownNodes(
