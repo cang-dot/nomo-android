@@ -74,6 +74,11 @@ jobs:
           APPLE_CODESIGN_IDENTITY: '-'
         run: pnpm run build:quicklook-extension
 
+      - name: Compile macOS app icon
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash scripts/compile-macos-appicon.sh
+
       - name: Prepare release body
         id: release_body
         shell: pwsh
