@@ -557,7 +557,9 @@ export function applyCodeBlockLineNumberSetting(visible: boolean) {
   document.documentElement.dataset.codeLineNumbers = visible ? 'visible' : 'hidden';
 }
 
-function toPersistedPreferenceEntries(preferences: AppPreferences) {
+function toPersistedPreferenceEntries(
+  preferences: AppPreferences,
+): Record<AppPreferenceKey, unknown> {
   return {
     themeMode: preferences.themeMode,
     colorThemeId: preferences.colorThemeId,
@@ -596,6 +598,7 @@ function toPersistedPreferenceEntries(preferences: AppPreferences) {
     shortcutPreferences: preferences.shortcutPreferences,
     imageHandlingSettings: preferences.imageHandlingSettings,
     developerMode: preferences.developerMode,
+    softwareUpdateAutoCheckEnabled: preferences.softwareUpdateAutoCheckEnabled,
   };
 }
 
