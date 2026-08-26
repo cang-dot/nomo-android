@@ -39,6 +39,7 @@
   export let semanticPane: HTMLElement;
   export let editorHost: HTMLDivElement;
   export let updateMarkdown: (event: Event) => void;
+  export let onSourceSelectionChange: (selectedMarkdown: string) => void = () => undefined;
   export let enterFrontMatterEdit: () => void;
   export let leaveFrontMatterEdit: () => void;
   export let updateFrontMatterContent: (content: string) => void;
@@ -95,6 +96,13 @@
   );
 
   const sourceImeFallback = createSourceTextareaImePunctuationFallback();
+
+  function notifySourceSelectionChange() {
+    if (!sourceTextarea) return;
+    const from = Math.min(sourceTextarea.selectionStart, sourceTextarea.selectionEnd);
+    const to = Math.max(sourceTextarea.selectionStart, sourceTextarea.selectionEnd);
+    onSourceSelectionChange(from === to ? '' : sourceTextarea.value.slice(from, to));
+  }
 
   // 末行最多上移四分之一视口；只有真实内容已经溢出视口时才启用，
   // 避免短文档在缩放过程中因辅助留白误出现滚动条。
@@ -562,12 +570,18 @@
           value={markdown}
           readonly={readonlyDocumentMode}
           on:keydown={sourceImeFallback.handleKeydown}
-          on:keyup={sourceImeFallback.handleKeyup}
+          on:keyup={(event) => {
+            sourceImeFallback.handleKeyup(event);
+            notifySourceSelectionChange();
+          }}
           on:beforeinput={sourceImeFallback.handleBeforeInput}
           on:input={(event) => {
             sourceImeFallback.handleInput();
             updateMarkdown(event);
+            notifySourceSelectionChange();
           }}
+          on:select={notifySourceSelectionChange}
+          on:pointerup={notifySourceSelectionChange}
           on:compositionstart={sourceImeFallback.handleCompositionStart}
           on:compositionupdate={sourceImeFallback.handleCompositionUpdate}
           on:compositionend={sourceImeFallback.handleCompositionEnd}

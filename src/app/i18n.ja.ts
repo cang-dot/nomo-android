@@ -217,12 +217,14 @@ export const JA_JP_EXTRA_TRANSLATIONS = {
   showDocumentStatsDescription: 'ドキュメント本文の右下に軽量の統計を表示します。',
   defaultStatsMetric: 'デフォルトの統計メトリック',
   defaultStatsMetricDescription:
-    'デフォルトでステータス バーに行、単語、文字のいずれを表示するかを決定します。',
+    'デフォルトでステータス バーに行、単語、文字数、文字のいずれを表示するかを決定します。',
   lines: 'ライン',
   words: '言葉',
+  visibleChars: '文字数',
   chars: 'キャラクター',
   lineUnit: ' 行',
   wordUnit: ' 語',
+  visibleCharUnit: ' 文字',
   charUnit: ' 文字',
   readingTime: '読書時間',
   readingTimeDescription:

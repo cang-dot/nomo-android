@@ -98,6 +98,7 @@ export interface EditorImageDeletionEvent {
 
 export interface EditorSelectionEvent {
   selection: EditorSelectionSnapshot | null;
+  selectedMarkdown: string;
 }
 
 export interface EditorError {

@@ -39,10 +39,12 @@
     type EditorMode,
     type EditorPasteMode,
     type EditorSearchMatch,
+    type EditorSelectionEvent,
     type EditorThemeOptions,
   } from '../lib/editor-core';
   import {
     analyzeMarkdown,
+    calculateDocumentStats,
     type DocumentStats,
     type OutlineItem,
   } from '../lib/outline/outlineService';
@@ -257,7 +259,7 @@
 
   const RECOVERY_KEY = 'nomo-save-recovery';
   const segmentedDocumentPort = createTauriSegmentedDocumentPort();
-  type WritingStatsMetric = 'lines' | 'words' | 'chars';
+  type WritingStatsMetric = 'lines' | 'words' | 'visibleChars' | 'chars';
   type CloseWindowAction = Exclude<CloseWindowBehavior, 'ask-every-time'>;
   type CloseWindowChoiceResult = { behavior: CloseWindowAction; remember: boolean } | null;
   type OpenTargetChoiceResult = {
@@ -314,6 +316,8 @@
   let visibleOutlineIds = new Set(outline.map((item) => item.id));
   let suppressOutlineScrollUntil = 0;
   let stats: DocumentStats = analyzeMarkdown('').stats;
+  let selectedStats: DocumentStats | null = null;
+  $: effectiveStats = selectedStats ?? stats;
   let writingStatsVisible = DEFAULT_APP_PREFERENCES.writingStatsVisible;
   let writingStatsMetric: WritingStatsMetric = DEFAULT_APP_PREFERENCES.writingStatsMetric;
   let readingTimeVisible = DEFAULT_APP_PREFERENCES.readingTimeVisible;
@@ -1408,6 +1412,7 @@
   function loadTabState(tab: Tab) {
     clearReadingPositionSaveTimer();
     cancelPendingReadingPositionRestore();
+    selectedStats = null;
     isSwitchingTab = true;
     try {
       dirty = tab.dirty;
@@ -2504,6 +2509,7 @@
       return false;
     }
     cancelPendingReadingPositionRestore();
+    selectedStats = null;
     const previousMode = mode;
     const anchor = getCurrentReadingAnchor(previousMode);
     saveCurrentReadingPositionToMemoryOnly(previousMode, anchor);
@@ -2994,12 +3000,25 @@
     copyMarkdownSyntaxEnabled,
     theme: initialResolvedTheme.editorTheme,
     onChange: syncFromEditor,
+    onSelectionChange: handleSemanticSelectionChange,
     onLinkShortcut: () => openLinkPicker(),
     onOpenLink: (href) => openLinkFromEditor(href),
     getImageContext: () => getImageContext(),
     onImagesDeleted: (event) => handleDeletedImageResources(event),
     onContextMenuOpen: handleContextMenuOpen,
   });
+
+  function handleSemanticSelectionChange(event: EditorSelectionEvent) {
+    if (mode !== 'semantic') return;
+    selectedStats = event.selection
+      ? calculateDocumentStats(event.selectedMarkdown)
+      : null;
+  }
+
+  function handleSourceSelectionChange(selectedMarkdown: string) {
+    if (mode !== 'source') return;
+    selectedStats = selectedMarkdown ? calculateDocumentStats(selectedMarkdown) : null;
+  }
 
   function openSearchPanel(replaceVisible = false) {
     if (isSegmentedTextTab(tabs.find((tab) => tab.id === activeTabId))) {
@@ -5240,6 +5259,9 @@
       return;
     }
     const markdownChanged = event.markdown !== markdown;
+    if (markdownChanged) {
+      selectedStats = null;
+    }
 
     // 预览标签页开始编辑 → 自动固定
     if (markdownChanged && previewTabId && previewTabId === activeTabId && event.dirty) {
@@ -6124,7 +6146,7 @@
   {activeOutlineId}
   {collapsedOutlineIds}
   {visibleOutlineIds}
-  {stats}
+  stats={effectiveStats}
   {writingStatsVisible}
   {writingStatsMetric}
   {readingTimeVisible}
@@ -6237,6 +6259,7 @@
   {openMarkdownFile}
   {openSettings}
   {setWritingStatsMetric}
+  onSourceSelectionChange={handleSourceSelectionChange}
   {retryMarkdownLint}
   onMarkdownLintIssueSelect={revealMarkdownLintIssue}
   onZoomChange={handleZoomChange}

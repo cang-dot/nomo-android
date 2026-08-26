@@ -33,7 +33,7 @@ export type EditorModePreference = 'semantic' | 'source';
 export type OpenDefaultBehavior = 'current-window' | 'new-window' | 'ask-every-time';
 export type CloseWindowBehavior = 'ask-every-time' | 'close-window' | 'close-to-tray';
 export type ExternalFileChangeBehavior = 'reload-external' | 'overwrite-external' | 'ignore';
-export type WritingStatsMetric = 'lines' | 'words' | 'chars';
+export type WritingStatsMetric = 'lines' | 'words' | 'visibleChars' | 'chars';
 export type ImageDefaultAlignPreference = ImageDefaultAlign;
 export type CodeBlockIndentPreference = 'spaces-2' | 'spaces-4' | 'tab';
 export type RenderModePreference = 'hardware' | 'software';
@@ -881,7 +881,9 @@ function resolveLegacyCloseWindowBehavior(
 }
 
 function isWritingStatsMetric(value: unknown): value is WritingStatsMetric {
-  return value === 'lines' || value === 'words' || value === 'chars';
+  return (
+    value === 'lines' || value === 'words' || value === 'visibleChars' || value === 'chars'
+  );
 }
 
 function isDiagramTypePreference(value: unknown): value is DiagramType {

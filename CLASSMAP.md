@@ -37,7 +37,7 @@
 | Responsibility | Primary code | Related code | Change when |
 |---|---|---|---|
 | 编辑器工厂与 API | `src/lib/editor-core/createEditorCore.ts` | `src/lib/editor-core/index.ts` | EditorCore 创建参数或对外接口变更 |
-| ProseMirror 核心实现 | `src/lib/editor-core/ProseMirrorEditorCore.ts` | `src/lib/editor-core/clipboardMarkdown.ts`, `markdown.ts`, `schema.ts`, plugins, nodeViews | EditorView 生命周期、事务、模式切换、命令执行、剪贴板负载与右键目标事务 |
+| ProseMirror 核心实现 | `src/lib/editor-core/ProseMirrorEditorCore.ts` | `src/lib/editor-core/clipboardMarkdown.ts`, `markdown.ts`, `schema.ts`, plugins, nodeViews | EditorView 生命周期、事务、模式切换、命令执行、选区 Markdown 通知、剪贴板负载与右键目标事务 |
 | 剪贴板 Markdown 判定 | `src/lib/editor-core/clipboardMarkdown.ts` | `src/lib/editor-core/ProseMirrorEditorCore.ts`, `markdown.ts` | 修改纯文本/Markdown 等价判定、粘贴 Slice 或纯文本事务标记 |
 | Schema 定义 | `src/lib/editor-core/schema.ts` | `src/lib/editor-core/callout/calloutSchema.ts` | 新增/修改节点或 mark 类型 |
 | Markdown 解析与序列化 | `src/lib/editor-core/markdown.ts` | `src/lib/editor-core/callout/calloutParser.ts`, `calloutSerializer.ts`, `html/` | Markdown 与 ProseMirror doc 互转规则变更 |
@@ -598,6 +598,7 @@
 
 **Owns:**
 - 编辑工作区 UI：源码 textarea、ProseMirror 挂载点
+- 源码 textarea 选区变化与选中 Markdown 片段通知
 - Front Matter 卡片、大纲面板
 - 大纲标题与空白区域的导航、展开/折叠、复制标题和隐藏大纲菜单项
 - 大纲整行 Pointer 拖拽状态机、三区落点提示、延时展开与边缘滚动
@@ -1176,6 +1177,7 @@
 - `EditorView` 生命周期管理
 - 编辑器状态创建与事务派发
 - Markdown 同步（编辑后序列化为 Markdown 通知应用层）
+- 语义选区变化与选中 Markdown 片段通知
 - 文档脏状态管理
 - 模式切换（语义/源码）
 - 命令执行
@@ -1450,7 +1452,7 @@
 
 **Owns：**
 - 从 Markdown 计算标题大纲
-- 字数统计和阅读统计
+- 行数、词数、可见字数、源码字符数和阅读统计
 
 **Does not own：**
 - 不拥有大纲 UI 展示（在 EditorWorkspace.svelte 中）
@@ -1458,7 +1460,7 @@
 
 **Called by:** `src/app/App.svelte`, `src/app/services/documentActionsController.ts`
 
-**Depends on:** —
+**Depends on:** `markdown-it`
 
 **Change this when：**
 - 修改大纲提取算法
@@ -2346,7 +2348,7 @@
 **Kind:** component
 
 **Owns:**
-- 状态栏 UI：字数/行数/词数统计展示、缩放百分比控制
+- 状态栏 UI：行数/词数/字数/字符统计展示、缩放百分比控制
 
 **Does not own:**
 - 不拥有统计数据计算（在 outlineService.ts 中）

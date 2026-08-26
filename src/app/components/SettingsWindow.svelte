@@ -2372,7 +2372,7 @@
                   <span class="setting-label">{t.defaultStatsMetric()}</span>
                   <p>{t.defaultStatsMetricDescription()}</p>
                 </div>
-                <div class="triple-control" role="group" aria-label={t.defaultStatsMetric()}>
+                <div class="quad-control" role="group" aria-label={t.defaultStatsMetric()}>
                   <button
                     type="button"
                     class:active={draftSettings.writingStatsMetric === 'lines'}
@@ -2384,6 +2384,12 @@
                     class:active={draftSettings.writingStatsMetric === 'words'}
                     aria-pressed={draftSettings.writingStatsMetric === 'words'}
                     on:click={() => setStatsMetric('words')}>{t.words()}</button
+                  >
+                  <button
+                    type="button"
+                    class:active={draftSettings.writingStatsMetric === 'visibleChars'}
+                    aria-pressed={draftSettings.writingStatsMetric === 'visibleChars'}
+                    on:click={() => setStatsMetric('visibleChars')}>{t.visibleChars()}</button
                   >
                   <button
                     type="button"

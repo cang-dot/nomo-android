@@ -37,7 +37,7 @@
   import { t, type EffectiveInterfaceLocale } from '../i18n';
   import { suppressUnhandledContextMenu } from '../services/contextMenuPolicy';
 
-  type StatsMetric = 'lines' | 'words' | 'chars';
+  type StatsMetric = 'lines' | 'words' | 'visibleChars' | 'chars';
   type AppBootState = 'booting' | 'restoring-workspace' | 'opening-file' | 'ready';
 
   export let interfaceLocale: EffectiveInterfaceLocale;
@@ -180,6 +180,7 @@
   export let pinPreviewTab: () => void;
   export let updateContentWidth: (event: Event) => void;
   export let updateMarkdown: (event: Event) => void;
+  export let onSourceSelectionChange: (selectedMarkdown: string) => void;
   export let enterFrontMatterEdit: () => void;
   export let leaveFrontMatterEdit: () => void;
   export let updateFrontMatterContent: (content: string) => void;
@@ -499,6 +500,7 @@
               {collapsedOutlineIds}
               {visibleOutlineIds}
               {updateMarkdown}
+              {onSourceSelectionChange}
               {enterFrontMatterEdit}
               {leaveFrontMatterEdit}
               {updateFrontMatterContent}

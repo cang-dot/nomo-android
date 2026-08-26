@@ -107,6 +107,7 @@ import type {
   InlinePendingMarks,
   EditorRuntimeOptions,
   EditorImageDeletionEvent,
+  EditorSelectionEvent,
   EditorSnapshot,
   EditorThemeOptions,
   SetMarkdownOptions,
@@ -1165,6 +1166,7 @@ export class ProseMirrorEditorCore implements EditorCore {
     }
 
     const previousDoc = this.view.state.doc;
+    const previousSelection = this.view.state.selection;
     const nextState = this.view.state.apply(transaction);
     this.view.updateState(nextState);
 
@@ -1178,6 +1180,27 @@ export class ProseMirrorEditorCore implements EditorCore {
     // 每次事务都递增版本并通知（pending mark 状态切换、选区变化等需要及时反映到 UI）
     this.version += 1;
     this.emit(transaction.docChanged ? 'content-pending' : 'transaction');
+    if (!nextState.selection.eq(previousSelection)) {
+      this.options.onSelectionChange?.(this.createSelectionEvent());
+    }
+  }
+
+  private createSelectionEvent(): EditorSelectionEvent {
+    if (!this.view || this.view.state.selection.empty) {
+      return { selection: null, selectedMarkdown: '' };
+    }
+
+    const { doc, selection } = this.view.state;
+    const clipboardDoc = removeEmptyTrailingParagraph(doc);
+    const selectionTo = Math.min(selection.to, clipboardDoc.content.size);
+    const selectedMarkdown =
+      serializeMarkdownSelection(clipboardDoc, selection.from, selectionTo) ??
+      serializeClipboardText(selection.content());
+
+    return {
+      selection: { anchor: selection.anchor, head: selection.head },
+      selectedMarkdown,
+    };
   }
 
   private scheduleMarkdownSync(): void {
