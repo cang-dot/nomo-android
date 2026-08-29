@@ -1,54 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createEditorCore } from '../../lib/editor-core';
 import { extractOutline } from '../../lib/outline/outlineService';
-import {
-  createOutlineInteractionController,
-  replaceTextareaWithNativeUndo,
-} from './outlineInteractionController';
+import type { MarkdownSourceEditorHandle } from '../components/markdownSourceEditor';
+import { createOutlineInteractionController } from './outlineInteractionController';
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-describe('replaceTextareaWithNativeUndo', () => {
-  it('uses one native insertText replacement instead of a programmatic fallback', () => {
-    const textarea = document.createElement('textarea');
-    textarea.value = '# One\n# Two\n';
-    textarea.setSelectionRange(2, 2);
-    const execCommand = vi.fn((command: string, _showUi?: boolean, value?: string) => {
-      if (command !== 'insertText') return false;
-      const from = textarea.selectionStart;
-      const to = textarea.selectionEnd;
-      textarea.value = `${textarea.value.slice(0, from)}${value ?? ''}${textarea.value.slice(to)}`;
-      return true;
-    });
-    Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand });
-
-    expect(replaceTextareaWithNativeUndo(textarea, '# Two\n# One\n')).toBe(true);
-    expect(textarea.value).toBe('# Two\n# One\n');
-    expect(execCommand).toHaveBeenCalledTimes(1);
-    expect(execCommand).toHaveBeenCalledWith('insertText', false, 'Two\n# One');
-  });
-
-  it('fails closed and restores the visible value when native replacement is unsupported', () => {
-    const textarea = document.createElement('textarea');
-    textarea.value = 'before';
-    textarea.setSelectionRange(2, 4);
-    const execCommand = vi.fn((command: string) => {
-      if (command === 'insertText') textarea.value = 'partial mutation';
-      if (command === 'undo') textarea.value = 'before';
-      return false;
-    });
-    Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand });
-
-    expect(replaceTextareaWithNativeUndo(textarea, 'after')).toBe(false);
-    expect(textarea.value).toBe('before');
-    expect(textarea.selectionStart).toBe(2);
-    expect(textarea.selectionEnd).toBe(4);
-    expect(execCommand).toHaveBeenNthCalledWith(2, 'undo');
-  });
-
+describe('outlineInteractionController', () => {
   it('restores collapsed and active identity after the deferred source analysis', async () => {
     vi.useFakeTimers();
     const markdown = '# Same\n## Child\n# Same\n';
@@ -61,20 +22,9 @@ describe('replaceTextareaWithNativeUndo', () => {
     let activeId = '';
     const setStatusMessage = vi.fn();
     vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
-    Object.defineProperty(document, 'execCommand', {
-      configurable: true,
-      value: vi.fn((command: string, _showUi?: boolean, value?: string) => {
-        if (command !== 'insertText') return false;
-        const from = textarea.selectionStart;
-        const to = textarea.selectionEnd;
-        textarea.value = `${textarea.value.slice(0, from)}${value ?? ''}${textarea.value.slice(to)}`;
-        textarea.dispatchEvent(new InputEvent('input', { bubbles: true }));
-        return true;
-      }),
-    });
-    textarea.addEventListener('input', () => {
+    const sourceEditor = createSourceEditorStub(textarea, (value) => {
       editor.setMarkdown(textarea.value, { reason: 'source-input', sourceInput: true });
-      outline = extractOutline(textarea.value);
+      outline = extractOutline(value);
     });
     const controller = createOutlineInteractionController({
       getMode: () => 'source',
@@ -93,7 +43,7 @@ describe('replaceTextareaWithNativeUndo', () => {
       setSuppressOutlineScrollUntil: vi.fn(),
       getSemanticPane: () => document.createElement('section'),
       getSourcePane: () => document.createElement('section'),
-      getSourceTextarea: () => textarea,
+      getSourceEditor: () => sourceEditor,
       getEditor: () => editor,
       getReadonly: () => false,
       setStatusMessage,
@@ -143,7 +93,7 @@ describe('replaceTextareaWithNativeUndo', () => {
       setSuppressOutlineScrollUntil: vi.fn(),
       getSemanticPane: () => document.createElement('section'),
       getSourcePane: () => document.createElement('section'),
-      getSourceTextarea: () => document.createElement('textarea'),
+      getSourceEditor: () => createSourceEditorStub(document.createElement('textarea')),
       getEditor: () => editor,
       getReadonly: () => false,
       setStatusMessage: vi.fn(),
@@ -162,3 +112,36 @@ describe('replaceTextareaWithNativeUndo', () => {
     editor.destroy();
   });
 });
+
+function createSourceEditorStub(
+  textarea: HTMLTextAreaElement,
+  onChange: (value: string) => void = () => undefined,
+): MarkdownSourceEditorHandle {
+  return {
+    getMarkdown: () => textarea.value,
+    setMarkdown: (value) => {
+      textarea.value = value;
+      onChange(value);
+    },
+    getSelection: () => ({ from: textarea.selectionStart, to: textarea.selectionEnd }),
+    setSelection: (from, to = from) => textarea.setSelectionRange(from, to),
+    getSelectedMarkdown: () => textarea.value.slice(textarea.selectionStart, textarea.selectionEnd),
+    focus: () => textarea.focus(),
+    revealRange: (from, to = from) => textarea.setSelectionRange(from, to),
+    undo: () => false,
+    redo: () => false,
+    lineAtOffset: (offset) => textarea.value.slice(0, offset).split(/\r?\n/).length,
+    offsetAtLine: () => 0,
+    getLineCount: () => textarea.value.split(/\r?\n/).length,
+    getLineTop: (line) => (line - 1) * 20,
+    lineAtHeight: (height) => Math.floor(height / 20) + 1,
+    getLineHeight: () => 20,
+    getScrollElement: () => textarea,
+    getContentElement: () => textarea,
+    getContentHeight: () => textarea.scrollHeight,
+    getBlockGeometry: () => [],
+    applyBlockGaps: () => undefined,
+    clearBlockGaps: () => undefined,
+    requestMeasure: () => undefined,
+  };
+}

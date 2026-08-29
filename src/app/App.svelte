@@ -56,6 +56,7 @@
     type FrontMatterBlock,
   } from '../lib/markdown/frontMatter';
   import AppShell from './components/AppShell.svelte';
+  import type { MarkdownSourceEditorHandle } from './components/markdownSourceEditor';
   import type SegmentedTextEditorWorkspaceComponent from './components/SegmentedTextEditorWorkspace.svelte';
   import FolderOpenDialog from './components/FolderOpenDialog.svelte';
   import {
@@ -66,6 +67,9 @@
     type PersistedWorkspaceState,
     type PersistedWorkspaceTab,
     type MarkdownTabState,
+    type EditorViewMode,
+    type SplitActivePane,
+    type SplitViewLayout,
     type Tab,
   } from './types';
   import {
@@ -206,6 +210,8 @@
     getSourceScrollAnchor,
     restoreSemanticReadingPosition,
     restoreSourceReadingPosition,
+    scrollSemanticToAnchor,
+    scrollSourceToAnchor,
     setScrollTop,
     type OutlineScrollAnchor,
   } from './services/outlineNavigation';
@@ -252,10 +258,7 @@
   import { reconcileSegmentedSaveState } from './services/segmentedSaveReconciliation';
   import { getOpenDocumentRenameBlock } from './services/documentRenameGuard';
   import { createMarkdownLintController } from './services/markdownLintController';
-  import {
-    EditorLinkResolutionError,
-    resolveEditorLink,
-  } from './services/documentLinkNavigation';
+  import { EditorLinkResolutionError, resolveEditorLink } from './services/documentLinkNavigation';
 
   const RECOVERY_KEY = 'nomo-save-recovery';
   const segmentedDocumentPort = createTauriSegmentedDocumentPort();
@@ -293,7 +296,12 @@
     bootAppearance,
     document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
   );
-  let mode: EditorMode = DEFAULT_APP_PREFERENCES.editorMode;
+  let mode: EditorViewMode = DEFAULT_APP_PREFERENCES.editorMode;
+  let preferredEditorMode: EditorViewMode = DEFAULT_APP_PREFERENCES.editorMode;
+  let splitViewLayout: SplitViewLayout = DEFAULT_APP_PREFERENCES.splitViewLayout;
+  let splitLeftPercent = DEFAULT_APP_PREFERENCES.splitLeftPercent;
+  let splitActivePane: SplitActivePane = 'semantic';
+  let splitAlignmentGuideVisible = false;
   let themeMode: ThemeMode = bootAppearance.themeMode;
   let colorThemeId = bootAppearance.colorThemeId;
   let documentStyleId = bootAppearance.documentStyleId;
@@ -348,12 +356,16 @@
   let pendingOpenChoiceResolver: ((result: OpenTargetChoiceResult) => void) | null = null;
   let editorHost: HTMLDivElement,
     fileInput: HTMLInputElement,
-    sourceTextarea: HTMLTextAreaElement,
+    sourceEditor: MarkdownSourceEditorHandle,
     semanticPane: HTMLElement,
     sourcePane: HTMLElement;
   let segmentedWorkspace: SegmentedTextEditorWorkspaceComponent | null = null;
   let mountedEditorHost: HTMLDivElement | null = null;
   let pendingSourceScrollTop: number | null = null;
+  let splitSemanticRefreshTimer: number | null = null;
+  let splitSemanticRefreshGeneration = 0;
+  let splitScrollFrame: number | null = null;
+  let splitProgrammaticScrollTarget: SplitActivePane | null = null;
   let refreshEditorViewportLayout: () => void = () => undefined;
   let largeDocumentMode = false,
     readonlyDocumentMode = false,
@@ -434,6 +446,7 @@
 
   const CONTENT_ANALYSIS_DEBOUNCE_MS = 120;
   const SEARCH_DEBOUNCE_MS = 150;
+  const SPLIT_SEMANTIC_REFRESH_DEBOUNCE_MS = 150;
 
   // 上下文菜单状态
   let contextMenuX = 0;
@@ -575,8 +588,8 @@
   }
 
   function revealMarkdownLintIssue(issue: MarkdownLintIssue): boolean {
-    if (mode === 'semantic') return editor.revealMarkdownLine(issue.lineNumber);
-    if (!sourceTextarea) return false;
+    if (getActiveEditorMode() === 'semantic') return editor.revealMarkdownLine(issue.lineNumber);
+    if (!sourceEditor) return false;
 
     const lineStarts = [0];
     for (let index = 0; index < markdown.length; index += 1) {
@@ -587,8 +600,8 @@
     const columnOffset = Math.max(0, (issue.columnNumber ?? 1) - 1);
     const from = Math.min(markdown.length, lineStart + columnOffset);
     const to = Math.min(markdown.length, from + Math.max(1, issue.rangeLength ?? 1));
-    sourceTextarea.focus();
-    sourceTextarea.setSelectionRange(from, to);
+    sourceEditor.focus();
+    sourceEditor.revealRange(from, to);
     return true;
   }
 
@@ -612,7 +625,7 @@
   let markdownMiniActive = false;
   let markdownMiniPinned = true;
   let markdownMiniTransitioning = false;
-  let markdownMiniPreviousMode: EditorMode | null = null;
+  let markdownMiniPreviousMode: EditorViewMode | null = null;
 
   function hasPersistableReadingPositionPath(path: string) {
     return Boolean(desktopEnabled && path && path !== t.untitledMarkdown());
@@ -1190,6 +1203,12 @@
     await saveMarkdownFile(true);
   }
 
+  function flushActiveEditorView() {
+    if (mode === 'split' && splitActivePane === 'source') {
+      refreshSplitSemanticView();
+    }
+  }
+
   function syncActiveTabMarkdownFromEditor() {
     if (!activeTabId) return markdown;
     const activeTab = tabs.find((tab) => tab.id === activeTabId);
@@ -1197,6 +1216,7 @@
       // 分段标签的正文只存在于 Rust session 与局部 CodeMirror window，禁止触发 Markdown flush。
       return markdown;
     }
+    flushActiveEditorView();
     const currentMarkdown = editor.flushMarkdown();
     if (currentMarkdown !== markdown) {
       markdown = currentMarkdown;
@@ -1228,7 +1248,7 @@
     frontMatterEditing = false;
     markdownMiniActive = true;
 
-    const shouldUseSemanticEditor = !largeDocumentMode && mode === 'source';
+    const shouldUseSemanticEditor = !largeDocumentMode && mode !== 'semantic';
     const nativeTransition = enterMarkdownMiniMode(desktopEnabled, markdownMiniPinned);
 
     try {
@@ -1284,7 +1304,7 @@
       markdownMiniPreviousMode = null;
       await tick();
       refreshEditorViewportLayout();
-      if (mode === 'semantic' && !readonlyDocumentMode) editor.focus();
+      if (getActiveEditorMode() === 'semantic' && !readonlyDocumentMode) editor.focus();
 
       if (options?.showExternalChange !== false && externalFileChange.type !== 'none') {
         openExternalChangeDialog(externalFileChange);
@@ -1345,9 +1365,100 @@
       outline,
       sourcePane.scrollTop,
       getSourceLineHeight(),
-      sourceTextarea,
+      sourceEditor,
       sourcePane,
     );
+  }
+
+  function getActiveEditorMode(): EditorMode {
+    return mode === 'split' ? splitActivePane : mode;
+  }
+
+  function getCoreModeForView(nextMode: EditorViewMode): EditorMode {
+    return nextMode === 'source' ? 'source' : 'semantic';
+  }
+
+  function clearSplitSemanticRefreshTimer() {
+    if (splitSemanticRefreshTimer !== null) {
+      window.clearTimeout(splitSemanticRefreshTimer);
+      splitSemanticRefreshTimer = null;
+    }
+  }
+
+  function refreshSplitSemanticView() {
+    clearSplitSemanticRefreshTimer();
+    const generation = ++splitSemanticRefreshGeneration;
+    if (mode !== 'split') return;
+
+    editor.refreshSemanticView();
+    void tick().then(() => {
+      if (mode !== 'split' || generation !== splitSemanticRefreshGeneration) return;
+      const editorGrid =
+        sourcePane?.closest<HTMLElement>('.editor-grid') ??
+        semanticPane?.closest<HTMLElement>('.editor-grid');
+      editorGrid?.dispatchEvent(new Event('nomo:editor-viewport-layout-refresh'));
+    });
+  }
+
+  function scheduleSplitSemanticRefresh() {
+    if (mode !== 'split') return;
+    clearSplitSemanticRefreshTimer();
+    const generation = ++splitSemanticRefreshGeneration;
+    splitSemanticRefreshTimer = window.setTimeout(() => {
+      splitSemanticRefreshTimer = null;
+      if (mode !== 'split' || generation !== splitSemanticRefreshGeneration) return;
+      refreshSplitSemanticView();
+    }, SPLIT_SEMANTIC_REFRESH_DEBOUNCE_MS);
+  }
+
+  function setSplitActivePane(nextPane: SplitActivePane) {
+    if (mode !== 'split' || splitActivePane === nextPane) return;
+
+    if (nextPane === 'source') {
+      // ProseMirror 的序列化是延迟的；源码区接管前必须先取得最新 Markdown。
+      const latestMarkdown = editor.getMarkdown();
+      if (sourceEditor && sourceEditor.getMarkdown() !== latestMarkdown) {
+        sourceEditor.setMarkdown(latestMarkdown, { addToHistory: false });
+      }
+    } else {
+      // 源码输入会延迟重建语义 DOM；语义区接管前强制刷新，避免旧 DOM 覆盖新内容。
+      refreshSplitSemanticView();
+    }
+    splitActivePane = nextPane;
+  }
+
+  function updateSplitLeftPercent(nextPercent: number, persist: boolean) {
+    splitLeftPercent = Math.min(75, Math.max(25, Math.round(nextPercent * 10) / 10));
+    if (persist) {
+      void updateAppSetting('splitLeftPercent', splitLeftPercent).catch(() => undefined);
+    }
+  }
+
+  function scheduleSplitScrollSync(sourceMode: SplitActivePane) {
+    if (mode !== 'split' || splitProgrammaticScrollTarget === sourceMode) return;
+    if (splitScrollFrame !== null) {
+      cancelAnimationFrame(splitScrollFrame);
+    }
+    splitScrollFrame = requestAnimationFrame(() => {
+      splitScrollFrame = null;
+      if (mode !== 'split') return;
+
+      const targetMode: SplitActivePane = sourceMode === 'semantic' ? 'source' : 'semantic';
+      const sourceScrollElement = sourceMode === 'semantic' ? semanticPane : sourcePane;
+      const targetScrollElement = targetMode === 'semantic' ? semanticPane : sourcePane;
+      splitProgrammaticScrollTarget = targetMode;
+      suppressProgrammaticReadingScroll(targetMode);
+      if (sourceScrollElement && targetScrollElement) {
+        setScrollTop(targetScrollElement, sourceScrollElement.scrollTop);
+      }
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (splitProgrammaticScrollTarget === targetMode) {
+            splitProgrammaticScrollTarget = null;
+          }
+        });
+      });
+    });
   }
 
   function getReadingPositionForTab(
@@ -1384,11 +1495,11 @@
   }
 
   function saveCurrentReadingPositionToMemoryOnly(
-    modeToSave: ReadingPositionMode = mode,
+    modeToSave: ReadingPositionMode = getActiveEditorMode(),
     anchor: OutlineScrollAnchor | null = getCurrentReadingAnchor(modeToSave),
   ) {
-    const activeTab = tabs.find((tab): tab is MarkdownTabState =>
-      tab.id === activeTabId && isMarkdownTab(tab),
+    const activeTab = tabs.find(
+      (tab): tab is MarkdownTabState => tab.id === activeTabId && isMarkdownTab(tab),
     );
     if (!activeTab) return;
     saveReadingPositionForTab(activeTab, modeToSave, anchor, false);
@@ -1410,6 +1521,13 @@
 
   // 加载指定 Tab 的状态并更新编辑器
   function loadTabState(tab: Tab) {
+    clearSplitSemanticRefreshTimer();
+    splitSemanticRefreshGeneration += 1;
+    if (splitScrollFrame !== null) {
+      cancelAnimationFrame(splitScrollFrame);
+      splitScrollFrame = null;
+    }
+    splitProgrammaticScrollTarget = null;
     clearReadingPositionSaveTimer();
     cancelPendingReadingPositionRestore();
     selectedStats = null;
@@ -1444,16 +1562,18 @@
       version = tab.version;
       largeDocumentMode = tab.largeDocumentMode;
       readonlyDocumentMode = tab.readonlyDocumentMode;
-      const nextMode = largeDocumentMode ? 'source' : mode;
-      const storedPosition = getReadingPositionForTab(tab, nextMode);
+      const nextViewMode: EditorViewMode = largeDocumentMode ? 'source' : preferredEditorMode;
+      const nextReadingMode: ReadingPositionMode =
+        nextViewMode === 'split' ? splitActivePane : nextViewMode;
+      const storedPosition = getReadingPositionForTab(tab, nextReadingMode);
       const restoreGeneration = readingPositionRestoreGeneration;
 
       if (editor) {
         editor.updateOptions({
           readonly: readonlyDocumentMode,
-          mode: nextMode,
+          mode: getCoreModeForView(nextViewMode),
         });
-        mode = nextMode;
+        mode = nextViewMode;
         editor.setMarkdown(markdown, {
           reason: 'switch-tab',
           dirty: tab.dirty,
@@ -1474,12 +1594,7 @@
       applyOutlineDefaultExpansion();
       stats = analysis.stats;
       syncSourceTextareaHeight();
-      scheduleReadingPositionRestore(
-        tab,
-        nextMode,
-        storedPosition,
-        restoreGeneration,
-      );
+      scheduleReadingPositionRestore(tab, nextReadingMode, storedPosition, restoreGeneration);
     } finally {
       isSwitchingTab = false;
     }
@@ -1530,20 +1645,34 @@
   }
 
   function handleSemanticScroll() {
-    if (programmaticReadingScrollTokens.has('semantic')) return;
+    if (
+      programmaticReadingScrollTokens.has('semantic') ||
+      splitProgrammaticScrollTarget === 'semantic' ||
+      semanticPane?.dataset.nomoBlockAlignmentScroll === 'true'
+    ) {
+      return;
+    }
     cancelPendingReadingPositionRestore();
     debounceReadingPositionSave('semantic');
+    scheduleSplitScrollSync('semantic');
   }
 
   function handleSourceScroll() {
-    if (programmaticReadingScrollTokens.has('source')) return;
+    if (
+      programmaticReadingScrollTokens.has('source') ||
+      splitProgrammaticScrollTarget === 'source' ||
+      sourcePane?.dataset.nomoBlockAlignmentScroll === 'true'
+    ) {
+      return;
+    }
     cancelPendingReadingPositionRestore();
     debounceReadingPositionSave('source');
+    scheduleSplitScrollSync('source');
   }
 
   function debounceReadingPositionSave(modeToSave: ReadingPositionMode) {
-    const activeTab = tabs.find((tab): tab is MarkdownTabState =>
-      tab.id === activeTabId && isMarkdownTab(tab),
+    const activeTab = tabs.find(
+      (tab): tab is MarkdownTabState => tab.id === activeTabId && isMarkdownTab(tab),
     );
     if (!activeTab) return;
     const anchor = getCurrentReadingAnchor(modeToSave);
@@ -1615,7 +1744,7 @@
         pending.mode === targetMode &&
         activeTabId === tab.id &&
         filePath === tab.filePath &&
-        mode === targetMode;
+        getActiveEditorMode() === targetMode;
       if (!targetStillActive) {
         if (pending?.generation === generation) {
           pendingReadingPositionRestore = null;
@@ -1627,15 +1756,14 @@
       const contentReady =
         targetMode === 'semantic'
           ? Boolean(semanticPane?.querySelector('.ProseMirror'))
-          : Boolean(sourceTextarea && sourceTextarea.value === markdown);
+          : Boolean(sourceEditor && sourceEditor.getMarkdown() === markdown);
       const expectsNonTop =
         anchor.documentProgress > 0.001 ||
         anchor.sourceLine > 1 ||
         (typeof anchor.scrollTop === 'number' && anchor.scrollTop > 1) ||
         (typeof anchor.offsetFromTop === 'number' && Math.abs(anchor.offsetFromTop) > 1);
       const layoutReady =
-        pane != null &&
-        (!expectsNonTop || Math.max(0, pane.scrollHeight - pane.clientHeight) > 0);
+        pane != null && (!expectsNonTop || Math.max(0, pane.scrollHeight - pane.clientHeight) > 0);
 
       if (!pane || !contentReady || !layoutReady) {
         if (remainingAttempts > 0) {
@@ -1655,7 +1783,7 @@
           });
           return;
         }
-        restoreSourceReadingPosition(outline, sourcePane, sourceTextarea, anchor, {
+        restoreSourceReadingPosition(outline, sourcePane, sourceEditor, anchor, {
           anchorMode: position.anchorMode,
           behavior: 'instant',
         });
@@ -1896,8 +2024,7 @@
     }
     const created = await createAppWindow(desktopEnabled, decision.windowLabel);
     if (!created) {
-      statusMessage =
-        target.kind === 'folder' ? t.loadFolderTreeFailed() : t.openFileFailed();
+      statusMessage = target.kind === 'folder' ? t.loadFolderTreeFailed() : t.openFileFailed();
     }
   }
 
@@ -2500,27 +2627,88 @@
     }, 2000);
   }
 
-  function persistEditorModePreference(nextMode: EditorMode) {
+  function persistEditorModePreference(nextMode: EditorViewMode) {
+    preferredEditorMode = nextMode;
     updateAppSetting('editorMode', nextMode).catch(() => undefined);
   }
 
-  async function changeEditorMode(nextMode: EditorMode, persistPreference: boolean) {
+  function notifyModePaneReady(nextMode: EditorViewMode, generation: number) {
+    const editorGrid =
+      sourcePane?.closest<HTMLElement>('.editor-grid') ??
+      semanticPane?.closest<HTMLElement>('.editor-grid');
+    editorGrid?.dispatchEvent(
+      new CustomEvent('nomo:mode-pane-ready', {
+        detail: { mode: nextMode, generation },
+      }),
+    );
+  }
+
+  async function changeEditorMode(nextMode: EditorViewMode, persistPreference: boolean) {
     if (isSegmentedTextTab(tabs.find((tab) => tab.id === activeTabId))) {
+      return false;
+    }
+    if (largeDocumentMode && nextMode !== 'source') {
+      statusMessage = t.largeDocumentStayReadonlySource();
       return false;
     }
     cancelPendingReadingPositionRestore();
     selectedStats = null;
-    const previousMode = mode;
-    const anchor = getCurrentReadingAnchor(previousMode);
-    saveCurrentReadingPositionToMemoryOnly(previousMode, anchor);
-    await editorInteraction.setMode(nextMode, anchor);
-    if (persistPreference && !(largeDocumentMode && nextMode === 'semantic')) {
+    const previousViewMode = mode;
+    const previousActiveMode = getActiveEditorMode();
+    const anchor = getCurrentReadingAnchor(previousActiveMode);
+    saveCurrentReadingPositionToMemoryOnly(previousActiveMode, anchor);
+
+    if (previousViewMode === 'split' && previousActiveMode === 'source') {
+      refreshSplitSemanticView();
+    } else {
+      editor.getMarkdown();
+    }
+    if (nextMode === 'split') {
+      splitActivePane = previousActiveMode;
+    }
+    clearSplitSemanticRefreshTimer();
+    splitSemanticRefreshGeneration += 1;
+    mode = nextMode;
+    try {
+      if (nextMode === 'split' && splitActivePane === 'source') {
+        editor.refreshSemanticView();
+      }
+      const targetCoreMode = nextMode === 'split' ? splitActivePane : getCoreModeForView(nextMode);
+      const modeSwitchResult = await editorInteraction.setMode(
+        targetCoreMode,
+        anchor,
+        true,
+        nextMode,
+      );
+      if (modeSwitchResult.status === 'superseded' || mode !== nextMode) {
+        return false;
+      }
+
+      if (nextMode === 'split') {
+        await tick();
+        const otherMode: SplitActivePane = splitActivePane === 'semantic' ? 'source' : 'semantic';
+        suppressProgrammaticReadingScroll(otherMode);
+        const activePane = splitActivePane === 'semantic' ? semanticPane : sourcePane;
+        const otherPane = otherMode === 'semantic' ? semanticPane : sourcePane;
+        if (activePane && otherPane) {
+          setScrollTop(otherPane, activePane.scrollTop);
+        }
+      }
+      notifyModePaneReady(nextMode, modeSwitchResult.generation);
+    } catch (error) {
+      await tick();
+      if (mode === nextMode) {
+        notifyModePaneReady(nextMode, -1);
+      }
+      throw error;
+    }
+    if (persistPreference) {
       persistEditorModePreference(nextMode);
     }
     return true;
   }
 
-  function setMode(nextMode: EditorMode) {
+  function setMode(nextMode: EditorViewMode) {
     if (markdownMiniActive) return;
     void changeEditorMode(nextMode, true).catch(() => undefined);
   }
@@ -2549,6 +2737,10 @@
 
   function toggleToolbar() {
     setToolbarHidden(!toolbarHidden);
+  }
+
+  function toggleSplitAlignmentGuide() {
+    splitAlignmentGuideVisible = !splitAlignmentGuideVisible;
   }
 
   function setOutlineVisiblePreference(visible: boolean) {
@@ -2710,7 +2902,13 @@
     return [
       { label: t.cut(), icon: 'cut', disabled, shortcut: 'Ctrl+X', action: cutSelection },
       { label: t.copy(), icon: 'copy', shortcut: 'Ctrl+C', action: copySelection },
-      { label: t.paste(), icon: 'paste', disabled, shortcut: 'Ctrl+V', action: pasteFromContextMenu },
+      {
+        label: t.paste(),
+        icon: 'paste',
+        disabled,
+        shortcut: 'Ctrl+V',
+        action: pasteFromContextMenu,
+      },
       {
         label: t.pasteAsPlainText(),
         icon: 'paste',
@@ -2724,12 +2922,30 @@
         icon: 'format',
         disabled,
         children: [
-          { ...commandMenuItem(t.bold(), { type: 'toggleBold' }, 'format', 'Ctrl+B'), active: pendingInlineMarks.strong },
-          { ...commandMenuItem(t.italic(), { type: 'toggleItalic' }, 'format', 'Ctrl+I'), active: pendingInlineMarks.em },
-          { ...commandMenuItem(t.underline(), { type: 'toggleUnderline' }, 'format', 'Ctrl+U'), active: pendingInlineMarks.underline },
-          { ...commandMenuItem(t.strikethrough(), { type: 'toggleStrikethrough' }, 'format'), active: pendingInlineMarks.strikethrough },
-          { ...commandMenuItem(t.inlineCode(), { type: 'toggleCode' }, 'code', 'Ctrl+`'), active: pendingInlineMarks.code },
-          { ...commandMenuItem(t.highlight(), { type: 'toggleHighlight' }, 'format'), active: pendingInlineMarks.highlight },
+          {
+            ...commandMenuItem(t.bold(), { type: 'toggleBold' }, 'format', 'Ctrl+B'),
+            active: pendingInlineMarks.strong,
+          },
+          {
+            ...commandMenuItem(t.italic(), { type: 'toggleItalic' }, 'format', 'Ctrl+I'),
+            active: pendingInlineMarks.em,
+          },
+          {
+            ...commandMenuItem(t.underline(), { type: 'toggleUnderline' }, 'format', 'Ctrl+U'),
+            active: pendingInlineMarks.underline,
+          },
+          {
+            ...commandMenuItem(t.strikethrough(), { type: 'toggleStrikethrough' }, 'format'),
+            active: pendingInlineMarks.strikethrough,
+          },
+          {
+            ...commandMenuItem(t.inlineCode(), { type: 'toggleCode' }, 'code', 'Ctrl+`'),
+            active: pendingInlineMarks.code,
+          },
+          {
+            ...commandMenuItem(t.highlight(), { type: 'toggleHighlight' }, 'format'),
+            active: pendingInlineMarks.highlight,
+          },
           menuSeparator(),
           commandMenuItem(t.clearStyle(), { type: 'clearInlineStyles' }, 'format'),
         ],
@@ -2743,7 +2959,12 @@
       },
       commandMenuItem(t.insertInlineComment(), { type: 'insertCommentInline' }, 'edit'),
       menuSeparator(),
-      { label: t.selectAll(), icon: 'select-all', shortcut: 'Ctrl+A', action: () => editor.selectAll() },
+      {
+        label: t.selectAll(),
+        icon: 'select-all',
+        shortcut: 'Ctrl+A',
+        action: () => editor.selectAll(),
+      },
       { label: t.find(), icon: 'search', shortcut: 'Ctrl+F', action: () => openSearchPanel(false) },
     ];
   }
@@ -2752,8 +2973,19 @@
     const disabled = readonlyDocumentMode;
     return [
       commandMenuItem(t.undo(), { type: 'undo' }, 'undo', 'Ctrl+Z'),
-      commandMenuItem(t.redo(), { type: 'redo' }, 'redo', getPlatformCapabilities().isMac ? 'Ctrl+Shift+Z' : 'Ctrl+Y'),
-      { label: t.paste(), icon: 'paste', disabled, shortcut: 'Ctrl+V', action: pasteFromContextMenu },
+      commandMenuItem(
+        t.redo(),
+        { type: 'redo' },
+        'redo',
+        getPlatformCapabilities().isMac ? 'Ctrl+Shift+Z' : 'Ctrl+Y',
+      ),
+      {
+        label: t.paste(),
+        icon: 'paste',
+        disabled,
+        shortcut: 'Ctrl+V',
+        action: pasteFromContextMenu,
+      },
       {
         label: t.pasteAsPlainText(),
         icon: 'paste',
@@ -2764,14 +2996,24 @@
       menuSeparator(),
       { label: t.insert(), icon: 'insert', disabled, children: buildInsertContextMenuItems() },
       menuSeparator(),
-      { label: t.selectAll(), icon: 'select-all', shortcut: 'Ctrl+A', action: () => editor.selectAll() },
+      {
+        label: t.selectAll(),
+        icon: 'select-all',
+        shortcut: 'Ctrl+A',
+        action: () => editor.selectAll(),
+      },
       { label: t.find(), icon: 'search', shortcut: 'Ctrl+F', action: () => openSearchPanel(false) },
     ];
   }
 
   function buildInsertContextMenuItems(): ContextMenuItem[] {
     const headings: ContextMenuItem[] = ([1, 2, 3, 4, 5, 6] as const).map((level) =>
-      commandMenuItem(t.headingLevel({ level }), { type: 'setHeading', level }, 'heading', `Ctrl+${level}`),
+      commandMenuItem(
+        t.headingLevel({ level }),
+        { type: 'setHeading', level },
+        'heading',
+        `Ctrl+${level}`,
+      ),
     );
     return [
       ...headings,
@@ -2798,7 +3040,11 @@
 
   function buildLinkContextMenuItems(target: ContextMenuTarget): ContextMenuItem[] {
     return [
-      { label: t.openLink(), icon: 'open', action: () => target.href && openLinkFromEditor(target.href) },
+      {
+        label: t.openLink(),
+        icon: 'open',
+        action: () => target.href && openLinkFromEditor(target.href),
+      },
       { label: t.editLink(), icon: 'edit', disabled: readonlyDocumentMode, action: openLinkPicker },
       { label: t.copyLinkAddress(), icon: 'copy', action: () => copyPlainText(target.href ?? '') },
       menuSeparator(),
@@ -2822,14 +3068,35 @@
 
   function buildCodeBlockContextMenuItems(target: ContextMenuTarget): ContextMenuItem[] {
     return [
-      { label: t.editCode(), icon: 'edit', disabled: readonlyDocumentMode, action: () => editor.editContextTarget(target) },
+      {
+        label: t.editCode(),
+        icon: 'edit',
+        disabled: readonlyDocumentMode,
+        action: () => editor.editContextTarget(target),
+      },
       { label: t.copyCode(), icon: 'copy', action: () => copyPlainText(target.text ?? '') },
-      { label: t.selectLanguage(), icon: 'code', disabled: readonlyDocumentMode, action: () => editor.chooseContextTargetLanguage(target) },
-      { label: t.convertToParagraph(), icon: 'format', disabled: readonlyDocumentMode, action: () => {
-        if (editor.selectContextTarget(target)) runCommand({ type: 'insertCodeBlock' });
-      } },
+      {
+        label: t.selectLanguage(),
+        icon: 'code',
+        disabled: readonlyDocumentMode,
+        action: () => editor.chooseContextTargetLanguage(target),
+      },
+      {
+        label: t.convertToParagraph(),
+        icon: 'format',
+        disabled: readonlyDocumentMode,
+        action: () => {
+          if (editor.selectContextTarget(target)) runCommand({ type: 'insertCodeBlock' });
+        },
+      },
       menuSeparator(),
-      { label: t.deleteAction(), icon: 'delete', danger: true, disabled: readonlyDocumentMode, action: () => editor.deleteContextTarget(target) },
+      {
+        label: t.deleteAction(),
+        icon: 'delete',
+        danger: true,
+        disabled: readonlyDocumentMode,
+        action: () => editor.deleteContextTarget(target),
+      },
     ];
   }
 
@@ -2840,9 +3107,21 @@
       commandMenuItem(t.addColumnBefore(), { type: 'addTableColumnBefore' }, 'table'),
       commandMenuItem(t.addColumnAfter(), { type: 'addTableColumnAfter' }, 'table'),
       menuSeparator(),
-      commandMenuItem(t.alignLeft(), { type: 'setTableColumnAlignment', align: 'left' }, 'align-left'),
-      commandMenuItem(t.alignCenter(), { type: 'setTableColumnAlignment', align: 'center' }, 'align-center'),
-      commandMenuItem(t.alignRight(), { type: 'setTableColumnAlignment', align: 'right' }, 'align-right'),
+      commandMenuItem(
+        t.alignLeft(),
+        { type: 'setTableColumnAlignment', align: 'left' },
+        'align-left',
+      ),
+      commandMenuItem(
+        t.alignCenter(),
+        { type: 'setTableColumnAlignment', align: 'center' },
+        'align-center',
+      ),
+      commandMenuItem(
+        t.alignRight(),
+        { type: 'setTableColumnAlignment', align: 'right' },
+        'align-right',
+      ),
       commandMenuItem(t.toggleTableHeader(), { type: 'toggleTableHeader' }, 'table'),
       menuSeparator(),
       commandMenuItem(t.deleteRow(), { type: 'deleteTableRow' }, 'delete'),
@@ -2854,10 +3133,25 @@
   function buildRenderedBlockContextMenuItems(target: ContextMenuTarget): ContextMenuItem[] {
     const isMermaid = target.kind === 'mermaid-block';
     return [
-      { label: isMermaid ? t.editDiagramSource() : t.editFormulaSource(), icon: 'edit', disabled: readonlyDocumentMode, action: () => editor.editContextTarget(target) },
-      { label: isMermaid ? t.copyDiagramSource() : t.copyFormulaSource(), icon: 'copy', action: () => copyPlainText(target.text ?? '') },
+      {
+        label: isMermaid ? t.editDiagramSource() : t.editFormulaSource(),
+        icon: 'edit',
+        disabled: readonlyDocumentMode,
+        action: () => editor.editContextTarget(target),
+      },
+      {
+        label: isMermaid ? t.copyDiagramSource() : t.copyFormulaSource(),
+        icon: 'copy',
+        action: () => copyPlainText(target.text ?? ''),
+      },
       menuSeparator(),
-      { label: t.deleteAction(), icon: 'delete', danger: true, disabled: readonlyDocumentMode, action: () => editor.deleteContextTarget(target) },
+      {
+        label: t.deleteAction(),
+        icon: 'delete',
+        danger: true,
+        disabled: readonlyDocumentMode,
+        action: () => editor.deleteContextTarget(target),
+      },
     ];
   }
 
@@ -2952,26 +3246,47 @@
   }
 
   function handleWorkspaceContextMenu(event: MouseEvent) {
-    if (mode !== 'semantic') return;
+    if (getActiveEditorMode() !== 'semantic') return;
     event.preventDefault();
     openApplicationContextMenu({
       x: event.clientX,
       y: event.clientY,
       items: [
-        { label: outlineVisible ? t.hideOutline() : t.showOutline(), icon: 'outline', active: outlineVisible, action: toggleOutlineVisible },
-        { label: toolbarHidden ? t.showToolbar() : t.hideToolbar(), icon: 'toolbar', active: !toolbarHidden, action: toggleToolbar },
-        { label: focusMode ? t.exitFocusMode() : t.enterFocusMode(), icon: 'focus', active: focusMode, action: toggleFocusMode },
+        {
+          label: outlineVisible ? t.hideOutline() : t.showOutline(),
+          icon: 'outline',
+          active: outlineVisible,
+          action: toggleOutlineVisible,
+        },
+        {
+          label: toolbarHidden ? t.showToolbar() : t.hideToolbar(),
+          icon: 'toolbar',
+          active: !toolbarHidden,
+          action: toggleToolbar,
+        },
+        {
+          label: focusMode ? t.exitFocusMode() : t.enterFocusMode(),
+          icon: 'focus',
+          active: focusMode,
+          action: toggleFocusMode,
+        },
         menuSeparator(),
         {
-          label: t.contentWidth(),
+          label: mode === 'split' ? t.splitAdaptiveWidth() : t.contentWidth(),
           icon: 'width',
+          disabled: mode === 'split',
           children: [45, 60, 75, 90].map((value) => ({
             label: `${value}%`,
             active: contentWidthPercent === value,
             action: () => editorSettings.updateContentWidthValue(value),
           })),
         },
-        { label: t.resetZoom(), icon: 'zoom', disabled: zoomPercent === 100, action: () => handleZoomChange(100) },
+        {
+          label: t.resetZoom(),
+          icon: 'zoom',
+          disabled: zoomPercent === 100,
+          action: () => handleZoomChange(100),
+        },
       ],
     });
   }
@@ -2995,7 +3310,7 @@
 
   const editor = createEditorCore({
     markdown,
-    mode,
+    mode: getCoreModeForView(mode),
     inlineCodeRenderingEnabled,
     copyMarkdownSyntaxEnabled,
     theme: initialResolvedTheme.editorTheme,
@@ -3009,14 +3324,12 @@
   });
 
   function handleSemanticSelectionChange(event: EditorSelectionEvent) {
-    if (mode !== 'semantic') return;
-    selectedStats = event.selection
-      ? calculateDocumentStats(event.selectedMarkdown)
-      : null;
+    if (getActiveEditorMode() !== 'semantic') return;
+    selectedStats = event.selection ? calculateDocumentStats(event.selectedMarkdown) : null;
   }
 
   function handleSourceSelectionChange(selectedMarkdown: string) {
-    if (mode !== 'source') return;
+    if (getActiveEditorMode() !== 'source') return;
     selectedStats = selectedMarkdown ? calculateDocumentStats(selectedMarkdown) : null;
   }
 
@@ -3041,17 +3354,17 @@
     const activeMatch = searchMatches[searchActiveIndex];
     searchPanelOpen = false;
     clearSearchDebounceTimer();
-    if (mode === 'source') {
+    if (getActiveEditorMode() === 'source') {
       editor.setSearchHighlights([], 0);
       if (
-        sourceTextarea &&
+        sourceEditor &&
         activeMatch &&
-        sourceTextarea.selectionStart === activeMatch.from &&
-        sourceTextarea.selectionEnd === activeMatch.to
+        sourceEditor.getSelection().from === activeMatch.from &&
+        sourceEditor.getSelection().to === activeMatch.to
       ) {
-        sourceTextarea.setSelectionRange(activeMatch.to, activeMatch.to);
+        sourceEditor.setSelection(activeMatch.to);
       }
-      sourceTextarea?.focus();
+      sourceEditor?.focus();
     } else {
       if (editor.clearSearchState) {
         editor.clearSearchState(activeMatch);
@@ -3128,9 +3441,9 @@
     const match = searchMatches[searchActiveIndex];
     if (!match) return;
 
-    if (mode === 'source') {
+    if (getActiveEditorMode() === 'source') {
       const nextMarkdown = replaceTextRange(markdown, match, searchReplacement);
-      editor.setMarkdown(nextMarkdown, { reason: 'programmatic-update' });
+      sourceEditor?.setMarkdown(nextMarkdown, { addToHistory: true });
     } else {
       editor.replaceSearchMatch(match, searchReplacement);
     }
@@ -3145,14 +3458,14 @@
     if (readonlyDocumentMode || !searchQuery) return;
     let replaced = 0;
 
-    if (mode === 'source') {
+    if (getActiveEditorMode() === 'source') {
       const result = replaceAllTextMatches(markdown, searchQuery, searchReplacement, {
         caseSensitive: searchCaseSensitive,
         wholeWord: searchWholeWord,
       });
       replaced = result.count;
       if (replaced > 0) {
-        editor.setMarkdown(result.text, { reason: 'programmatic-update' });
+        sourceEditor?.setMarkdown(result.text, { addToHistory: true });
       }
     } else {
       replaced = editor.replaceAllSearchMatches(searchQuery, searchReplacement, {
@@ -3179,7 +3492,7 @@
 
     const previousMatch = searchMatches[searchActiveIndex];
     searchMatches =
-      mode === 'source'
+      getActiveEditorMode() === 'source'
         ? findTextMatches(markdown, searchQuery, {
             caseSensitive: searchCaseSensitive,
             wholeWord: searchWholeWord,
@@ -3206,7 +3519,7 @@
     }
 
     // 更新编辑器搜索高亮 decorations（不依赖 focus 即可显示）
-    if (mode !== 'source') {
+    if (getActiveEditorMode() !== 'source') {
       editor.setSearchHighlights(searchMatches, searchActiveIndex);
     } else {
       editor.setSearchHighlights([], 0);
@@ -3249,7 +3562,7 @@
     const searchCursorEnd = activeSearchInput?.selectionEnd ?? null;
 
     // 总是 focus 编辑器，让 scrollIntoView 和 selection 高亮生效
-    if (mode === 'source') {
+    if (getActiveEditorMode() === 'source') {
       await selectSourceSearchMatch(match, true);
     } else {
       editor.selectSearchMatch(match, true);
@@ -3268,14 +3581,11 @@
 
   async function selectSourceSearchMatch(match: EditorSearchMatch, focusEditor = true) {
     await tick();
-    if (!sourceTextarea) return;
+    if (!sourceEditor) return;
     if (focusEditor) {
-      sourceTextarea.focus();
+      sourceEditor.focus();
     }
-    sourceTextarea.setSelectionRange(match.from, match.to);
-    const lineHeight = getSourceLineHeight();
-    const line = markdown.slice(0, match.from).split('\n').length - 1;
-    setScrollTop(sourcePane, Math.max(0, line * lineHeight - sourcePane.clientHeight / 2));
+    sourceEditor.revealRange(match.from, match.to);
     await waitForAnimationFrame();
   }
 
@@ -3688,6 +3998,7 @@
     getCurrentFolderPath: () => currentFolderPath,
     getFileInput: () => fileInput,
     getEditor: () => editor,
+    beforeMarkdownCommit: flushActiveEditorView,
     getTabs: () => tabs,
     setTabs: (value) => {
       tabs = value;
@@ -3718,7 +4029,7 @@
     expandAncestors,
   });
   const outlineInteraction = createOutlineInteractionController({
-    getMode: () => mode,
+    getMode: () => getActiveEditorMode(),
     getMarkdown: () => markdown,
     getOutline: () => outline,
     getCollapsedOutlineIds: () => collapsedOutlineIds,
@@ -3738,7 +4049,7 @@
     },
     getSemanticPane: () => semanticPane,
     getSourcePane: () => sourcePane,
-    getSourceTextarea: () => sourceTextarea,
+    getSourceEditor: () => sourceEditor,
     getEditor: () => editor,
     getReadonly: () => readonlyDocumentMode,
     setStatusMessage: (value) => {
@@ -3749,15 +4060,16 @@
   const editorInteraction = createEditorInteractionController({
     getEditor: () => editor,
     getLargeDocumentMode: () => largeDocumentMode,
-    getMode: () => mode,
+    getMode: () => getActiveEditorMode(),
     getOutline: () => outline,
     getSemanticPane: () => semanticPane,
     getSourcePane: () => sourcePane,
-    getSourceTextarea: () => sourceTextarea,
+    getSourceEditor: () => sourceEditor,
     getPendingSourceScrollTop: () => pendingSourceScrollTop,
     setPendingSourceScrollTop: (value) => {
       pendingSourceScrollTop = value;
     },
+    suppressSourceLayoutScroll: () => suppressProgrammaticReadingScroll('source'),
     setSuppressOutlineScrollUntil: (value) => {
       suppressOutlineScrollUntil = value;
     },
@@ -3768,10 +4080,10 @@
   });
   const imageInsertion = createImageInsertionHandlers({
     getEditor: () => editor,
-    getMode: () => mode,
+    getMode: () => getActiveEditorMode(),
     getFileName: () => fileName,
     getNativePath: () => nativePath,
-    getSourceTextarea: () => sourceTextarea,
+    getSourceEditor: () => sourceEditor,
     getImageContext: () => getImageContext(),
     saveMarkdownFile: (saveAs) => saveMarkdownFile(saveAs),
     setMarkdown: (value) => editor.setMarkdown(value),
@@ -3782,7 +4094,10 @@
   });
   const handleEditorDrop = imageInsertion.handleEditorDrop;
   const handleEditorPaste = imageInsertion.handleEditorPaste;
-  const updateMarkdown = editorInteraction.updateMarkdown;
+  function updateMarkdown(nextMarkdown: string) {
+    editorInteraction.updateMarkdown(nextMarkdown);
+    scheduleSplitSemanticRefresh();
+  }
   const runMarkdownCommand = editorInteraction.runCommand;
   function runCommand(command: EditorCommand) {
     const activeTab = tabs.find((tab) => tab.id === activeTabId);
@@ -3869,7 +4184,9 @@
           writeBootSnapshot: options.writeBootSnapshot,
         });
       } else if (options.writeBootSnapshot) {
-        writeThemeBootSnapshot(resolveTheme(getCurrentAppearancePreferences(), options.systemScheme));
+        writeThemeBootSnapshot(
+          resolveTheme(getCurrentAppearancePreferences(), options.systemScheme),
+        );
       }
       return;
     }
@@ -4760,6 +5077,9 @@
     fontSize = preferences.fontSize;
     lineHeight = preferences.lineHeight;
     contentWidthPercent = preferences.contentWidthPercent;
+    preferredEditorMode = preferences.editorMode;
+    splitViewLayout = preferences.splitViewLayout;
+    splitLeftPercent = preferences.splitLeftPercent;
     imageSettings = preferences.imageHandlingSettings;
     openDefaultBehavior = preferences.openDefaultBehavior;
     filePreviewEnabled = preferences.filePreviewEnabled;
@@ -4813,7 +5133,8 @@
     if (!shouldBeLargeDocument && largeDocumentMode) {
       largeDocumentMode = false;
       readonlyDocumentMode = false;
-      editor.updateOptions({ mode });
+      mode = preferredEditorMode;
+      editor.updateOptions({ mode: getCoreModeForView(mode) });
     } else if (shouldBeLargeDocument && !largeDocumentMode) {
       largeDocumentMode = true;
       readonlyDocumentMode = true;
@@ -4824,7 +5145,7 @@
 
     if (options.applyEditorMode && !largeDocumentMode) {
       mode = preferences.editorMode;
-      editor.updateOptions({ mode: preferences.editorMode });
+      editor.updateOptions({ mode: getCoreModeForView(preferences.editorMode) });
     }
 
     if (preferences.developerMode) {
@@ -4842,7 +5163,9 @@
       colorThemeId,
       documentStyleId,
       interfaceLanguage,
-      editorMode: mode,
+      editorMode: preferredEditorMode,
+      splitViewLayout,
+      splitLeftPercent,
       autoSaveEnabled,
       autoSaveDelayMs,
       createSnapshotBeforeSave,
@@ -4892,8 +5215,7 @@
     const appearanceOnly =
       patchKeys.length > 0 &&
       patchKeys.every(
-        (key) =>
-          key === 'themeMode' || key === 'colorThemeId' || key === 'documentStyleId',
+        (key) => key === 'themeMode' || key === 'colorThemeId' || key === 'documentStyleId',
       );
 
     if (appearanceOnly) {
@@ -5054,7 +5376,7 @@
     try {
       desktopEnabled = isTauriRuntime();
       window.addEventListener('wheel', handleGlobalWheel, { capture: true, passive: false });
-      let persistedEditorMode: EditorMode | null = null;
+      let persistedEditorMode: EditorViewMode | null = null;
       let settings: Awaited<ReturnType<typeof listAppSettings>> = [];
       let restoredWorkspaceTabs = false;
       let hasPendingFolder = false;
@@ -5169,8 +5491,9 @@
       }
 
       if (persistedEditorMode && !largeDocumentMode) {
+        preferredEditorMode = persistedEditorMode;
         mode = persistedEditorMode;
-        editor.updateOptions({ mode: persistedEditorMode });
+        editor.updateOptions({ mode: getCoreModeForView(persistedEditorMode) });
       }
       await setupDesktopEvents();
       await refreshRecentFiles();
@@ -5238,6 +5561,8 @@
     if (toastTimer !== null) window.clearTimeout(toastTimer);
     if (linkOpeningTimer !== null) window.clearTimeout(linkOpeningTimer);
     if (softwareUpdateStartupTimer !== null) window.clearTimeout(softwareUpdateStartupTimer);
+    clearSplitSemanticRefreshTimer();
+    if (splitScrollFrame !== null) cancelAnimationFrame(splitScrollFrame);
     clearContentAnalysisTimer();
     clearSearchDebounceTimer();
     window.removeEventListener('keydown', handleGlobalShortcut);
@@ -5277,7 +5602,6 @@
       savedMarkdown = event.markdown;
     }
     version = event.version;
-    mode = event.mode;
     pendingInlineMarks = event.pendingInlineMarks;
 
     activeTab.dirty = dirty;
@@ -5397,7 +5721,7 @@
       statusMessage = t.readonlyCannotEditLink();
       return;
     }
-    if (mode !== 'semantic') {
+    if (getActiveEditorMode() !== 'semantic') {
       statusMessage = t.switchSemanticBeforeEditLink();
       return;
     }
@@ -5940,7 +6264,7 @@
   }
 
   function syncZoomFrameViewportLayout(pane?: HTMLElement) {
-    const visiblePane = pane ?? (mode === 'source' ? sourcePane : semanticPane);
+    const visiblePane = pane ?? (getActiveEditorMode() === 'source' ? sourcePane : semanticPane);
     visiblePane?.dispatchEvent(new Event('nomo:editor-viewport-layout-refresh'));
   }
 
@@ -5948,7 +6272,7 @@
   // 记录指向元素内的相对位置，每帧用元素的新几何位置校正滚动，
   // 避免按整页 scrollHeight 比例缩放时视角逐步向下漂移。
   function saveScrollAnchor(clientX?: number, clientY?: number): ZoomScrollAnchor | null {
-    const pane = mode === 'source' ? sourcePane : semanticPane;
+    const pane = getActiveEditorMode() === 'source' ? sourcePane : semanticPane;
     if (!pane) return null;
 
     const paneRect = pane.getBoundingClientRect();
@@ -6104,8 +6428,9 @@
   bind:fileInput
   bind:sourcePane
   bind:semanticPane
-  bind:sourceTextarea
+  bind:sourceEditor
   bind:editorHost
+  editorCore={editor}
   {focusMode}
   {toolbarHidden}
   toolbarShortcut={shortcutPreferences['toggle-toolbar']}
@@ -6122,6 +6447,10 @@
   {recentFiles}
   {missingRecentPaths}
   {mode}
+  {splitViewLayout}
+  {splitLeftPercent}
+  {splitActivePane}
+  {splitAlignmentGuideVisible}
   {outlineVisible}
   {currentFolderPath}
   {rootFolderExpanded}
@@ -6136,6 +6465,7 @@
   {activeTabId}
   {previewTabId}
   {markdown}
+  sourceDocumentId={activeTabId}
   {largeDocumentMode}
   {frontMatter}
   {frontMatterEditing}
@@ -6222,6 +6552,9 @@
   {removeLink}
   {insertTableWithSize}
   {setMode}
+  {setSplitActivePane}
+  {updateSplitLeftPercent}
+  {toggleSplitAlignmentGuide}
   {toggleOutlineVisible}
   {toggleFocusMode}
   {toggleToolbar}

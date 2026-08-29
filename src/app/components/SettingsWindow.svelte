@@ -40,6 +40,7 @@
     type InterfaceLanguagePreference,
     type MarkdownLintRuleSet,
     type RenderModePreference,
+    type SplitViewLayoutPreference,
     type ShortcutCommandId,
     type WritingStatsMetric,
   } from '../services/settings';
@@ -965,6 +966,10 @@
     updateDraft({ editorMode });
   }
 
+  function setSplitViewLayout(splitViewLayout: SplitViewLayoutPreference) {
+    updateDraft({ splitViewLayout });
+  }
+
   function setDocumentStyle(documentStyleId: string) {
     updateDraft({ documentStyleId });
   }
@@ -1560,7 +1565,7 @@
                   <span class="setting-label">{t.editorModeDefault()}</span>
                   <p>{t.editorModeDefaultDescription()}</p>
                 </div>
-                <div class="segmented-control" role="group" aria-label={t.editorModeDefault()}>
+                <div class="triple-control" role="group" aria-label={t.editorModeDefault()}>
                   <button
                     type="button"
                     class:active={draftSettings.editorMode === 'semantic'}
@@ -1572,6 +1577,35 @@
                     class:active={draftSettings.editorMode === 'source'}
                     aria-pressed={draftSettings.editorMode === 'source'}
                     on:click={() => setEditorMode('source')}>{t.sourceMode()}</button
+                  >
+                  <button
+                    type="button"
+                    class:active={draftSettings.editorMode === 'split'}
+                    aria-pressed={draftSettings.editorMode === 'split'}
+                    on:click={() => setEditorMode('split')}>{t.splitMode()}</button
+                  >
+                </div>
+              </div>
+
+              <div class="setting-row">
+                <div>
+                  <span class="setting-label">{t.splitViewLayout()}</span>
+                  <p>{t.splitViewLayoutDescription()}</p>
+                </div>
+                <div class="segmented-control" role="group" aria-label={t.splitViewLayout()}>
+                  <button
+                    type="button"
+                    class:active={draftSettings.splitViewLayout === 'semantic-source'}
+                    aria-pressed={draftSettings.splitViewLayout === 'semantic-source'}
+                    on:click={() => setSplitViewLayout('semantic-source')}
+                    >{t.semanticOnLeft()}</button
+                  >
+                  <button
+                    type="button"
+                    class:active={draftSettings.splitViewLayout === 'source-semantic'}
+                    aria-pressed={draftSettings.splitViewLayout === 'source-semantic'}
+                    on:click={() => setSplitViewLayout('source-semantic')}
+                    >{t.sourceOnLeft()}</button
                   >
                 </div>
               </div>

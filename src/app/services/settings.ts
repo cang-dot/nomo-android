@@ -20,6 +20,7 @@ import {
   isInterfaceLanguagePreference,
   type InterfaceLanguagePreference,
 } from '../i18n';
+import type { EditorViewMode, SplitViewLayout } from '../types';
 import {
   CLASSIC_DOCUMENT_STYLE_ID,
   DEFAULT_COLOR_THEME_ID,
@@ -29,7 +30,8 @@ import {
 } from './themeRegistry';
 
 export type { AppearancePreferences, ColorScheme, ThemeMode };
-export type EditorModePreference = 'semantic' | 'source';
+export type EditorModePreference = EditorViewMode;
+export type SplitViewLayoutPreference = SplitViewLayout;
 export type OpenDefaultBehavior = 'current-window' | 'new-window' | 'ask-every-time';
 export type CloseWindowBehavior = 'ask-every-time' | 'close-window' | 'close-to-tray';
 export type ExternalFileChangeBehavior = 'reload-external' | 'overwrite-external' | 'ignore';
@@ -71,6 +73,8 @@ export interface AppPreferences {
   documentStyleId: string;
   interfaceLanguage: InterfaceLanguagePreference;
   editorMode: EditorModePreference;
+  splitViewLayout: SplitViewLayoutPreference;
+  splitLeftPercent: number;
   autoSaveEnabled: boolean;
   autoSaveDelayMs: number;
   createSnapshotBeforeSave: boolean;
@@ -150,6 +154,8 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   documentStyleId: DEFAULT_DOCUMENT_STYLE_ID,
   interfaceLanguage: DEFAULT_INTERFACE_LANGUAGE,
   editorMode: 'semantic',
+  splitViewLayout: 'semantic-source',
+  splitLeftPercent: 50,
   autoSaveEnabled: false,
   autoSaveDelayMs: 1000,
   createSnapshotBeforeSave: true,
@@ -260,6 +266,8 @@ export async function loadAppPreferences(
     ...appearance,
     interfaceLanguage: parseSetting<unknown>(settings, 'interfaceLanguage'),
     editorMode: parseSetting<unknown>(settings, 'editorMode'),
+    splitViewLayout: parseSetting<unknown>(settings, 'splitViewLayout'),
+    splitLeftPercent: parseSetting<unknown>(settings, 'splitLeftPercent'),
     autoSaveEnabled: parseSetting<unknown>(settings, 'autoSaveEnabled'),
     autoSaveDelayMs: parseSetting<unknown>(settings, 'autoSaveDelayMs'),
     createSnapshotBeforeSave: parseSetting<unknown>(settings, 'createSnapshotBeforeSave'),
@@ -360,6 +368,15 @@ export function normalizeAppPreferences(
     editorMode: isEditorModePreference(value.editorMode)
       ? value.editorMode
       : DEFAULT_APP_PREFERENCES.editorMode,
+    splitViewLayout: isSplitViewLayoutPreference(value.splitViewLayout)
+      ? value.splitViewLayout
+      : DEFAULT_APP_PREFERENCES.splitViewLayout,
+    splitLeftPercent: clampNumber(
+      value.splitLeftPercent,
+      25,
+      75,
+      DEFAULT_APP_PREFERENCES.splitLeftPercent,
+    ),
     autoSaveEnabled:
       typeof value.autoSaveEnabled === 'boolean'
         ? value.autoSaveEnabled
@@ -566,6 +583,8 @@ function toPersistedPreferenceEntries(
     documentStyleId: preferences.documentStyleId,
     interfaceLanguage: preferences.interfaceLanguage,
     editorMode: preferences.editorMode,
+    splitViewLayout: preferences.splitViewLayout,
+    splitLeftPercent: preferences.splitLeftPercent,
     autoSaveEnabled: preferences.autoSaveEnabled,
     autoSaveDelayMs: preferences.autoSaveDelayMs,
     createSnapshotBeforeSave: preferences.createSnapshotBeforeSave,
@@ -849,7 +868,11 @@ function isThemeMode(value: unknown): value is ThemeMode {
 }
 
 function isEditorModePreference(value: unknown): value is EditorModePreference {
-  return value === 'semantic' || value === 'source';
+  return value === 'semantic' || value === 'source' || value === 'split';
+}
+
+function isSplitViewLayoutPreference(value: unknown): value is SplitViewLayoutPreference {
+  return value === 'semantic-source' || value === 'source-semantic';
 }
 
 function isOpenDefaultBehavior(value: unknown): value is OpenDefaultBehavior {

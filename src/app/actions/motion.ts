@@ -464,40 +464,167 @@ type ModePaneParams = {
 export function modePaneMotion(node: HTMLElement, params: ModePaneParams) {
   let previousMode = params.mode;
   let tween: gsap.core.Tween | null = null;
+  let transitionSequence = 0;
+  let pendingTransition: {
+    sequence: number;
+    mode: string;
+    fadeIn: HTMLElement[];
+    fadeOut: HTMLElement[];
+  } | null = null;
+
+  const sourcePane = node.querySelector<HTMLElement>('.source-pane');
+  const semanticPane = node.querySelector<HTMLElement>('.semantic-pane');
+  const divider = node.querySelector<HTMLElement>('.split-divider');
+
+  function getPane(mode: string) {
+    return mode === 'source' ? sourcePane : semanticPane;
+  }
+
+  function setRestingInteractivity(mode: string) {
+    const split = mode === 'split';
+    if (sourcePane) {
+      sourcePane.inert = !split && mode !== 'source';
+      sourcePane.setAttribute('aria-hidden', String(!split && mode !== 'source'));
+    }
+    if (semanticPane) {
+      semanticPane.inert = !split && mode !== 'semantic';
+      semanticPane.setAttribute('aria-hidden', String(!split && mode !== 'semantic'));
+    }
+  }
+
+  function clearTransitionStyles() {
+    const targets = [sourcePane, semanticPane, divider].filter((target): target is HTMLElement =>
+      Boolean(target),
+    );
+    if (targets.length > 0) {
+      gsap.set(targets, { clearProps: 'display,opacity,visibility,pointerEvents' });
+    }
+  }
+
+  function finishTransition(sequence: number, mode: string) {
+    if (!pendingTransition || pendingTransition.sequence !== sequence) return;
+    tween = null;
+    pendingTransition = null;
+    clearTransitionStyles();
+    node.removeAttribute('aria-busy');
+    delete node.dataset.modeTransitionFrom;
+    delete node.dataset.modeTransitionTo;
+    setRestingInteractivity(mode);
+    node.dispatchEvent(new CustomEvent('nomo:mode-pane-transition-complete'));
+  }
+
+  function cancelTransition(nextMode: string) {
+    transitionSequence += 1;
+    tween?.kill();
+    tween = null;
+    pendingTransition = null;
+    clearTransitionStyles();
+    node.removeAttribute('aria-busy');
+    delete node.dataset.modeTransitionFrom;
+    delete node.dataset.modeTransitionTo;
+    setRestingInteractivity(nextMode);
+  }
+
+  function prepareTransition(fromMode: string, nextMode: string) {
+    cancelTransition(nextMode);
+    const sequence = transitionSequence;
+    const fadeIn: HTMLElement[] = [];
+    const fadeOut: HTMLElement[] = [];
+    node.setAttribute('aria-busy', 'true');
+    node.dataset.modeTransitionFrom = fromMode;
+    node.dataset.modeTransitionTo = nextMode;
+
+    if (sourcePane) sourcePane.inert = true;
+    if (semanticPane) semanticPane.inert = true;
+
+    if (fromMode === 'split' && nextMode !== 'split') {
+      const targetPane = getPane(nextMode);
+      const discardedPane = targetPane === sourcePane ? semanticPane : sourcePane;
+      if (targetPane) gsap.set(targetPane, { display: 'block', autoAlpha: 1 });
+      if (discardedPane) {
+        gsap.set(discardedPane, { display: 'block', autoAlpha: 1 });
+        fadeOut.push(discardedPane);
+      }
+      if (divider) {
+        gsap.set(divider, { display: 'block', autoAlpha: 1 });
+        fadeOut.push(divider);
+      }
+    } else if (fromMode !== 'split' && nextMode === 'split') {
+      const stablePane = getPane(fromMode);
+      const joiningPane = stablePane === sourcePane ? semanticPane : sourcePane;
+      if (stablePane) gsap.set(stablePane, { display: 'block', autoAlpha: 1 });
+      if (joiningPane) {
+        gsap.set(joiningPane, { display: 'block', autoAlpha: 0 });
+        fadeIn.push(joiningPane);
+      }
+      if (divider) {
+        gsap.set(divider, { display: 'block', autoAlpha: 0 });
+        fadeIn.push(divider);
+      }
+    } else {
+      const outgoingPane = getPane(fromMode);
+      const incomingPane = getPane(nextMode);
+      if (outgoingPane) {
+        gsap.set(outgoingPane, { display: 'block', autoAlpha: 1 });
+        fadeOut.push(outgoingPane);
+      }
+      if (incomingPane) {
+        gsap.set(incomingPane, { display: 'block', autoAlpha: 0 });
+        fadeIn.push(incomingPane);
+      }
+    }
+
+    pendingTransition = { sequence, mode: nextMode, fadeIn, fadeOut };
+  }
+
+  function revealPreparedPane(event: Event) {
+    const detail = (event as CustomEvent<{ mode?: string }>).detail;
+    const transition = pendingTransition;
+    if (!transition || detail?.mode !== transition.mode) return;
+
+    const targets = [...transition.fadeOut, ...transition.fadeIn];
+    if (targets.length === 0 || prefersReducedMotion()) {
+      if (transition.fadeOut.length > 0) gsap.set(transition.fadeOut, { autoAlpha: 0 });
+      if (transition.fadeIn.length > 0) gsap.set(transition.fadeIn, { autoAlpha: 1 });
+      finishTransition(transition.sequence, transition.mode);
+      return;
+    }
+
+    tween?.kill();
+    tween = gsap.to(targets, {
+      autoAlpha: (index) => (index < transition.fadeOut.length ? 0 : 1),
+      duration: motionDuration('mode'),
+      ease,
+      overwrite: true,
+      onComplete: () => finishTransition(transition.sequence, transition.mode),
+    });
+  }
 
   function sync(nextParams: ModePaneParams) {
-    if (nextParams.disabled || prefersReducedMotion()) {
+    if (nextParams.disabled) {
+      cancelTransition(nextParams.mode);
       previousMode = nextParams.mode;
       return;
     }
     if (previousMode === nextParams.mode) return;
-
-    const visiblePane = node.querySelector<HTMLElement>(
-      nextParams.mode === 'source' ? '.source-pane' : '.semantic-pane',
-    );
-    if (!visiblePane) return;
-
-    tween?.kill();
-    tween = gsap.fromTo(
-      visiblePane,
-      { autoAlpha: 0 },
-      {
-        autoAlpha: 1,
-        duration: motionDuration('mode'),
-        ease,
-        overwrite: true,
-        clearProps: 'visibility',
-      },
-    );
+    prepareTransition(previousMode, nextParams.mode);
     previousMode = nextParams.mode;
   }
+
+  node.addEventListener('nomo:mode-pane-ready', revealPreparedPane);
+  setRestingInteractivity(params.mode);
 
   return {
     update(nextParams: ModePaneParams) {
       sync(nextParams);
     },
     destroy() {
+      node.removeEventListener('nomo:mode-pane-ready', revealPreparedPane);
       tween?.kill();
+      clearTransitionStyles();
+      node.removeAttribute('aria-busy');
+      delete node.dataset.modeTransitionFrom;
+      delete node.dataset.modeTransitionTo;
     },
   };
 }

@@ -1,4 +1,9 @@
 import type { MarkdownEncoding } from '../lib/services/storage';
+import type { EditorMode } from '../lib/editor-core';
+
+export type EditorViewMode = EditorMode | 'split';
+export type SplitViewLayout = 'semantic-source' | 'source-semantic';
+export type SplitActivePane = EditorMode;
 
 export type DocumentKind = 'markdown' | 'text' | 'json';
 

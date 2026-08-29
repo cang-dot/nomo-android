@@ -1,4 +1,5 @@
-import { isDiagramType, type EditorCommand, type EditorMode } from '../../lib/editor-core';
+import { isDiagramType, type EditorCommand } from '../../lib/editor-core';
+import type { EditorViewMode } from '../types';
 import {
   DEFAULT_SHORTCUT_PREFERENCES,
   type ShortcutCommandId,
@@ -24,8 +25,8 @@ export interface AppCommandHandlers {
   openSettings: () => void;
   editFrontMatter: () => void;
   showUnavailableFeature: (featureName: string) => void;
-  setMode: (mode: EditorMode) => void;
-  getMode: () => EditorMode;
+  setMode: (mode: EditorViewMode) => void;
+  getMode: () => EditorViewMode;
   toggleTheme: () => void;
   toggleFocusMode: () => void;
   toggleToolbar?: () => void;

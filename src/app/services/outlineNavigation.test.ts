@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { OutlineItem } from '../../lib/outline/outlineService';
+import type { MarkdownSourceEditorHandle } from '../components/markdownSourceEditor';
 import {
   getActiveOutlineIdFromSemantic,
   getSemanticScrollAnchor,
@@ -393,10 +394,38 @@ function createSemanticPane(
   return semanticPane;
 }
 
-function createTextarea(lineCount: number) {
-  const textarea = document.createElement('textarea');
+function createTextarea(lineCount: number): HTMLTextAreaElement & MarkdownSourceEditorHandle {
+  const textarea = document.createElement('textarea') as HTMLTextAreaElement &
+    MarkdownSourceEditorHandle;
   textarea.style.lineHeight = '20px';
   textarea.value = Array.from({ length: lineCount }, (_, index) => `line ${index + 1}`).join('\n');
+  textarea.getMarkdown = () => textarea.value;
+  textarea.setMarkdown = (value) => {
+    textarea.value = value;
+  };
+  textarea.getSelection = () => ({ from: textarea.selectionStart, to: textarea.selectionEnd });
+  textarea.setSelection = (from, to = from) => textarea.setSelectionRange(from, to);
+  textarea.getSelectedMarkdown = () =>
+    textarea.value.slice(textarea.selectionStart, textarea.selectionEnd);
+  textarea.revealRange = textarea.setSelection;
+  textarea.undo = () => false;
+  textarea.redo = () => false;
+  textarea.lineAtOffset = (offset) => textarea.value.slice(0, offset).split(/\r?\n/).length;
+  textarea.offsetAtLine = (line) =>
+    textarea.value.split(/\r?\n/).slice(0, line - 1).join('\n').length + (line > 1 ? 1 : 0);
+  textarea.getLineCount = () => textarea.value.split(/\r?\n/).length;
+  textarea.getLineTop = (line) => textarea.offsetTop + (line - 1) * 20;
+  textarea.lineAtHeight = (height) =>
+    Math.max(1, Math.floor((height - textarea.offsetTop) / 20) + 1);
+  textarea.getLineHeight = () => 20;
+  textarea.getScrollElement = () =>
+    textarea.closest<HTMLElement>('.source-pane') ?? textarea.parentElement ?? textarea;
+  textarea.getContentElement = () => textarea;
+  textarea.getContentHeight = () => textarea.scrollHeight;
+  textarea.getBlockGeometry = () => [];
+  textarea.applyBlockGaps = () => undefined;
+  textarea.clearBlockGaps = () => undefined;
+  textarea.requestMeasure = () => undefined;
   return textarea;
 }
 

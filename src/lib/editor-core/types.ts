@@ -215,6 +215,7 @@ export interface EditorCore {
   destroy(): void;
   getMarkdown(): string;
   flushMarkdown(): string;
+  refreshSemanticView(): void;
   setMarkdown(markdown: string, options?: SetMarkdownOptions): void;
   setDirty(dirty: boolean): void;
   getSnapshot(): EditorSnapshot;
@@ -238,6 +239,15 @@ export interface EditorCore {
   clearSearchState?(activeMatch?: EditorSearchMatch): void;
   selectSearchMatch(match: EditorSearchMatch, focus?: boolean): boolean;
   revealMarkdownLine(lineNumber: number): boolean;
+  /** 返回当前语义文档的顶层块数量，不读取或暴露 ProseMirror 内部状态。 */
+  getBlockAlignmentBlockCount(): number;
+  /** 对齐几何统一使用浏览器视口 CSS 像素。 */
+  getBlockAlignmentGeometry(
+    anchors: Array<{ key: string; nodeIndex: number }>,
+  ): Array<{ key: string; top: number; nextTop: number; existingGap: number }>;
+  /** 接收浏览器视口 CSS 像素，由实现内部换算为编辑器局部高度。 */
+  applyBlockAlignmentGaps(gaps: Array<{ key: string; nodeIndex: number; height: number }>): void;
+  clearBlockAlignmentGaps(): void;
   replaceSearchMatch(match: EditorSearchMatch, replacement: string): boolean;
   replaceAllSearchMatches(query: string, replacement: string, options: EditorSearchOptions): number;
   execute(command: EditorCommand): boolean;

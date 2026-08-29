@@ -685,18 +685,44 @@ const tableMarkdownSerializer = new MarkdownSerializer(
  *   - <p align="left|center|right"><img ...></p>  → ![alt](src){align=X width=Y}
  *   - 独立一行的 <img src="..." ...>             → ![alt](src){width=Y}
  */
-function preprocessImageHtml(markdown: string): string {
+interface MarkdownLineProvenance {
+  fromLine: number;
+  toLine: number;
+}
+
+interface PreprocessedImageHtml {
+  markdown: string;
+  lineProvenance: MarkdownLineProvenance[];
+}
+
+/**
+ * 图片 HTML 可能把多行源码折叠成一行 Markdown。解析器需要折叠后的文本，
+ * 但块对齐必须继续使用原始源码行号，因此同时记录每一行的来源范围。
+ */
+function preprocessImageHtmlWithProvenance(markdown: string): PreprocessedImageHtml {
+  const collapsedRanges: Array<MarkdownLineProvenance & { transformedLine: number }> = [];
+  let removedLineCount = 0;
+
   // 步骤1：<p align="..."><img ...></p>（单行或多行）
   let result = markdown.replace(
     /<p\s+align="(left|center|right)"\s*>\s*(<img\s+[^>]+(?:\/>|>))\s*<\/p>/gi,
-    (_full, align: string, imgTag: string) => {
+    (_full: string, align: string, imgTag: string, offset: number) => {
       const cleaned = imgTag.replace(/\/>$/, '').replace(/>$/, '').trim();
       const attrs = parseHtmlImgAttrs(cleaned);
       if (!attrs.src) return _full;
       const parts: string[] = [`align=${align.toLowerCase()}`];
       if (attrs.width) parts.push(`width=${attrs.width}`);
       const titleStr = attrs.title ? ` "${attrs.title}"` : '';
-      return `![${attrs.alt || ''}](${attrs.src}${titleStr}){${parts.join(' ')}}`;
+      const replacement = `![${attrs.alt || ''}](${attrs.src}${titleStr}){${parts.join(' ')}}`;
+      const originalFromLine = getLineNumberAtOffset(markdown, offset);
+      const originalToLine = getLineNumberAtOffset(markdown, offset + _full.length - 1);
+      collapsedRanges.push({
+        transformedLine: originalFromLine - removedLineCount,
+        fromLine: originalFromLine,
+        toLine: originalToLine,
+      });
+      removedLineCount += originalToLine - originalFromLine;
+      return replacement;
     },
   );
 
@@ -716,7 +742,46 @@ function preprocessImageHtml(markdown: string): string {
     },
   );
 
-  return result;
+  const lineProvenance = Array.from(
+    { length: countMarkdownLines(result) },
+    (_value, index): MarkdownLineProvenance => {
+      const transformedLine = index + 1;
+      const collapsedRange = collapsedRanges.find(
+        (range) => range.transformedLine === transformedLine,
+      );
+      if (collapsedRange) {
+        return { fromLine: collapsedRange.fromLine, toLine: collapsedRange.toLine };
+      }
+      const removedBeforeLine = collapsedRanges.reduce(
+        (total, range) =>
+          range.transformedLine < transformedLine
+            ? total + range.toLine - range.fromLine
+            : total,
+        0,
+      );
+      const originalLine = transformedLine + removedBeforeLine;
+      return { fromLine: originalLine, toLine: originalLine };
+    },
+  );
+
+  return { markdown: result, lineProvenance };
+}
+
+function preprocessImageHtml(markdown: string): string {
+  return preprocessImageHtmlWithProvenance(markdown).markdown;
+}
+
+function getLineNumberAtOffset(value: string, offset: number): number {
+  let line = 1;
+  const end = Math.max(0, Math.min(offset, value.length));
+  for (let index = 0; index < end; index += 1) {
+    if (value.charCodeAt(index) === 10) line += 1;
+  }
+  return line;
+}
+
+function countMarkdownLines(value: string): number {
+  return value.split(/\r?\n/).length;
 }
 
 function hasFollowingInlineContent(parent: ProseMirrorNode, index: number): boolean {
@@ -758,15 +823,23 @@ export function getMarkdownBlockLineMap(markdown: string): MarkdownBlockLineMap[
   const bodyOffset = body ? markdown.indexOf(body, frontMatter.length) : markdown.length;
   const bodyStartLineOffset =
     (bodyOffset >= 0 ? markdown.slice(0, bodyOffset) : '').split('\n').length - 1;
-  const tokens = markdownIt.parse(preprocessImageHtml(body), {});
+  const preprocessed = preprocessImageHtmlWithProvenance(body);
+  const tokens = markdownIt.parse(preprocessed.markdown, {});
 
   return tokens
     .filter((token) => token.level === 0 && token.nesting >= 0 && token.map)
-    .map((token, nodeIndex) => ({
-      fromLine: token.map![0] + bodyStartLineOffset + 1,
-      toLine: token.map![1] + bodyStartLineOffset,
-      nodeIndex,
-    }));
+    .map((token, nodeIndex): MarkdownBlockLineMap | null => {
+      const [fromLineIndex, toLineIndex] = token.map!;
+      const fromProvenance = preprocessed.lineProvenance[fromLineIndex];
+      const toProvenance = preprocessed.lineProvenance[toLineIndex - 1];
+      if (!fromProvenance || !toProvenance) return null;
+      return {
+        fromLine: fromProvenance.fromLine + bodyStartLineOffset,
+        toLine: toProvenance.toLine + bodyStartLineOffset,
+        nodeIndex,
+      };
+    })
+    .filter((mapping): mapping is MarkdownBlockLineMap => mapping !== null);
 }
 
 export function serializeMarkdown(doc: ProseMirrorNode): string {

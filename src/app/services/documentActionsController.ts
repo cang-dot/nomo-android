@@ -87,6 +87,7 @@ interface DocumentActionsOptions {
   getCurrentFolderPath(): string;
   getFileInput(): HTMLInputElement;
   getEditor(): EditorCore;
+  beforeMarkdownCommit?(): void;
   getTabs(): Tab[];
   setTabs(value: Tab[]): void;
   getActiveTabId(): string;
@@ -196,6 +197,7 @@ export function createDocumentActionsController(options: DocumentActionsOptions)
       return false;
     }
 
+    options.beforeMarkdownCommit?.();
     const markdownToSave = normalizeMarkdownForSave(options.getEditor().getMarkdown());
 
     if (options.getDesktopEnabled()) {
@@ -543,6 +545,7 @@ export function createDocumentActionsController(options: DocumentActionsOptions)
       return;
     }
 
+    options.beforeMarkdownCommit?.();
     const markdownToSave = normalizeMarkdownForSave(options.getEditor().getMarkdown());
     options.writeRecoveryDraft('before-overwrite-external');
     const { document, error } = await saveMarkdownWithSourceEncoding(

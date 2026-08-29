@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EditorCore, EditorMode } from '../../lib/editor-core';
 import type { OutlineItem } from '../../lib/outline/outlineService';
+import type { MarkdownSourceEditorHandle } from '../components/markdownSourceEditor';
 import { createEditorInteractionController } from './editorInteractionController';
 
 describe('editorInteractionController viewport layout', () => {
@@ -85,13 +86,7 @@ describe('editorInteractionController viewport layout', () => {
       sourceTextarea,
       sourceLineHeight: 20,
     });
-    const event = new InputEvent('input');
-    Object.defineProperty(event, 'currentTarget', {
-      configurable: true,
-      value: sourceTextarea,
-    });
-
-    controller.updateMarkdown(event);
+    controller.updateMarkdown(sourceTextarea.value);
 
     expect(editor.setMarkdown).toHaveBeenCalledWith(sourceTextarea.value, {
       reason: 'source-input',
@@ -307,7 +302,7 @@ function createController(options: {
     getOutline: () => options.outline ?? [],
     getSemanticPane: () => options.semanticPane,
     getSourcePane: () => options.sourcePane,
-    getSourceTextarea: () => options.sourceTextarea,
+    getSourceEditor: () => createSourceEditorStub(options.sourceTextarea),
     getPendingSourceScrollTop: () => pendingSourceScrollTop.value,
     setPendingSourceScrollTop: (value) => {
       pendingSourceScrollTop.value = value;
@@ -316,6 +311,39 @@ function createController(options: {
     setStatusMessage: vi.fn(),
     getSourceLineHeight: () => options.sourceLineHeight ?? 24,
   });
+}
+
+function createSourceEditorStub(
+  textarea: HTMLTextAreaElement | undefined,
+): MarkdownSourceEditorHandle | undefined {
+  if (!textarea) return undefined;
+  return {
+    getMarkdown: () => textarea.value,
+    setMarkdown: (value) => {
+      textarea.value = value;
+    },
+    getSelection: () => ({ from: textarea.selectionStart, to: textarea.selectionEnd }),
+    setSelection: (from, to = from) => textarea.setSelectionRange(from, to),
+    getSelectedMarkdown: () => textarea.value.slice(textarea.selectionStart, textarea.selectionEnd),
+    focus: () => textarea.focus(),
+    revealRange: (from, to = from) => textarea.setSelectionRange(from, to),
+    undo: () => false,
+    redo: () => false,
+    lineAtOffset: (offset) => textarea.value.slice(0, offset).split(/\r?\n/).length,
+    offsetAtLine: (line) =>
+      textarea.value.split(/\r?\n/).slice(0, line - 1).join('\n').length + (line > 1 ? 1 : 0),
+    getLineCount: () => textarea.value.split(/\r?\n/).length,
+    getLineTop: (line) => (line - 1) * 20,
+    lineAtHeight: (height) => Math.floor(height / 20) + 1,
+    getLineHeight: () => 20,
+    getScrollElement: () => textarea.parentElement ?? textarea,
+    getContentElement: () => textarea,
+    getContentHeight: () => textarea.scrollHeight,
+    getBlockGeometry: () => [],
+    applyBlockGaps: () => undefined,
+    clearBlockGaps: () => undefined,
+    requestMeasure: () => undefined,
+  };
 }
 
 function createEditorCoreStub(onModeChange?: (mode: EditorMode) => void): EditorCore {

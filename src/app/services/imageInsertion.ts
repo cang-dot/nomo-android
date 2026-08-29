@@ -1,6 +1,7 @@
 import type { EditorCore, EditorMode } from '../../lib/editor-core';
 import { getImageLoader } from '../../lib/editor-core/renderers';
 import type { ImageContext } from '../../lib/services/render';
+import type { MarkdownSourceEditorHandle } from '../components/markdownSourceEditor';
 import { createPerfTimer, logError, logInfo } from '../../lib/services/logger';
 import { t } from '../i18n';
 import { createImageMarkdown, getImageFiles } from './imageMarkdown';
@@ -10,7 +11,7 @@ interface ImageInsertionOptions {
   getMode(): EditorMode;
   getFileName(): string;
   getNativePath(): string | null;
-  getSourceTextarea(): HTMLTextAreaElement;
+  getSourceEditor(): MarkdownSourceEditorHandle;
   getImageContext(): ImageContext;
   saveMarkdownFile(saveAs?: boolean): Promise<boolean | void> | boolean | void;
   setMarkdown(markdown: string): void;
@@ -126,10 +127,11 @@ export function createImageInsertionHandlers(options: ImageInsertionOptions) {
   }
 
   function insertSourceMarkdown(items: Array<{ src: string; alt: string }>) {
-    const textarea = options.getSourceTextarea();
+    const sourceEditor = options.getSourceEditor();
     const markdown = options.getEditor().getMarkdown();
-    const start = textarea?.selectionStart ?? markdown.length;
-    const end = textarea?.selectionEnd ?? start;
+    const selection = sourceEditor?.getSelection();
+    const start = selection?.from ?? markdown.length;
+    const end = selection?.to ?? start;
     const imageSettings = options.getImageContext().settings;
     const width = imageSettings?.defaultImageWidth || '';
     const align = imageSettings?.defaultImageAlign ?? 'none';
@@ -155,13 +157,13 @@ export function createImageInsertionHandlers(options: ImageInsertionOptions) {
     const nextMarkdown = `${prefix}${before}${snippet}${after}${suffix}`;
     const nextSelection = prefix.length + before.length + snippet.length;
 
-    options.setMarkdown(nextMarkdown);
+    sourceEditor.setMarkdown(nextMarkdown, { addToHistory: true });
     requestAnimationFrame(() => {
-      if (!textarea) {
+      if (!sourceEditor) {
         return;
       }
-      textarea.focus();
-      textarea.setSelectionRange(nextSelection, nextSelection);
+      sourceEditor.focus();
+      sourceEditor.setSelection(nextSelection);
       options.syncSourceTextareaHeight();
     });
   }

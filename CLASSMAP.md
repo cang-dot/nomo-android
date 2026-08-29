@@ -42,6 +42,7 @@
 | Schema 定义 | `src/lib/editor-core/schema.ts` | `src/lib/editor-core/callout/calloutSchema.ts` | 新增/修改节点或 mark 类型 |
 | Markdown 解析与序列化 | `src/lib/editor-core/markdown.ts` | `src/lib/editor-core/callout/calloutParser.ts`, `calloutSerializer.ts`, `html/` | Markdown 与 ProseMirror doc 互转规则变更 |
 | Markdown 源码行到语义块导航 | `src/lib/editor-core/markdown.ts`, `src/lib/editor-core/ProseMirrorEditorCore.ts` | `src/app/App.svelte` | 诊断、大纲等功能需要从源码行定位到最近的语义顶层块 |
+| 双栏顶层块对齐 | `src/app/services/markdownBlockAlignment.ts` | `src/app/components/EditorWorkspace.svelte`, `src/app/components/MarkdownSourceEditor.svelte`, `src/lib/editor-core/ProseMirrorEditorCore.ts`, `src/lib/editor-core/plugins/blockAlignment.ts` | 修改源码/语义顶层块映射、视口像素换算、高度补偿、收敛状态或 degraded fallback |
 | HTML 安全策略 | `src/lib/editor-core/html/htmlPolicy.ts` | `src/lib/editor-core/html/htmlClassifier.ts` | 可编辑 HTML 标签/属性白名单变更 |
 | HTML 块分类 | `src/lib/editor-core/html/htmlClassifier.ts` | `src/lib/editor-core/html/htmlPolicy.ts` | HTML 块可编辑性判断/属性提取规则变更 |
 | 编辑器命令 | `src/lib/editor-core/editorCommands.ts` | `src/lib/editor-core/tableCommands.ts`, `codeBlockCommands.ts`, `callout/calloutCommands.ts` | 新增或修改编辑命令 |
@@ -83,6 +84,7 @@
 | 正文目录事务同步 | `src/lib/editor-core/plugins/tocSync.ts` | `src/lib/toc/tocService.ts` | 标题变化后的 TOC 派生更新与撤销历史保持 |
 | 编辑器上下文菜单插件 | `src/lib/editor-core/plugins/contextMenu.ts` | `src/app/App.svelte`, `src/app/components/ContextMenu.svelte` | 语义编辑区目标命中、选区定位与右键菜单事件分发 |
 | 行内代码语法高亮装饰 | `src/lib/editor-core/plugins/codeHighlightDecorationPlugin.ts` | — | 行内 code mark 的 token 着色 |
+| 双栏语义块间距装饰 | `src/lib/editor-core/plugins/blockAlignment.ts` | `src/lib/editor-core/ProseMirrorEditorCore.ts` | 修改不入文档、不入 history 的语义块 spacer |
 
 ### 文件系统与文档操作
 
@@ -125,6 +127,7 @@
 | 章节结构重排 | `src/lib/outline/outlineReorder.ts` | `src/lib/editor-core/editorCommands.ts` | 计算章节子树、落点、层级变化、Markdown 重排与标题索引映射 |
 | 大纲交互控制器 | `src/app/services/outlineInteractionController.ts` | `src/app/services/outlineNavigation.ts`, `src/lib/outline/outlineReorder.ts` | 点击定位、章节拖拽编排、源码模式可撤销替换 |
 | 大纲滚动定位 | `src/app/services/outlineNavigation.ts` | `src/app/services/editorInteractionController.ts` | 模式切换/源码与语义视图滚动同步 |
+| Markdown 源码 CodeMirror | `src/app/components/MarkdownSourceEditor.svelte` | `src/app/components/markdownSourceEditor.ts`, `src/app/components/EditorWorkspace.svelte` | 修改源码输入、选区、历史、行坐标、滚动容器或块 spacer |
 | 大纲状态 | `src/app/services/outlineState.ts` | — | 大纲展开/折叠/可见性/激活项计算 |
 | TOC 服务 | `src/lib/toc/tocService.ts` | `src/lib/editor-core/nodeViews/TocBlockNodeView.ts` | 生成 TOC Markdown/目录项数据 |
 
@@ -597,8 +600,8 @@
 **Kind:** component
 
 **Owns:**
-- 编辑工作区 UI：源码 textarea、ProseMirror 挂载点
-- 源码 textarea 选区变化与选中 Markdown 片段通知
+- 编辑工作区 UI：CodeMirror 源码编辑器、ProseMirror 挂载点
+- 双栏总高度、顶层 Markdown 块 spacer、滚动同坐标、测试基准线与模式切换几何就绪事件的协调
 - Front Matter 卡片、大纲面板
 - 大纲标题与空白区域的导航、展开/折叠、复制标题和隐藏大纲菜单项
 - 大纲整行 Pointer 拖拽状态机、三区落点提示、延时展开与边缘滚动
@@ -611,7 +614,7 @@
 
 **Called by:** `src/app/components/AppShell.svelte`
 
-**Depends on:** `FrontMatterCard.svelte`, `src/lib/editor-core/types.ts`, `src/lib/outline/outlineReorder.ts`
+**Depends on:** `FrontMatterCard.svelte`, `MarkdownSourceEditor.svelte`, `src/app/services/markdownBlockAlignment.ts`, `src/lib/editor-core/types.ts`, `src/lib/outline/outlineReorder.ts`
 
 **Change this when：**
 - 修改编辑区布局
@@ -623,7 +626,52 @@
 - 修改 ProseMirror 内部逻辑
 - 修改 Markdown 解析规则
 
-**Related tests:** —
+**Related tests:** `src/app/components/EditorWorkspace.test.ts`, `src/app/services/markdownBlockAlignment.test.ts`
+
+**Confidence:** high
+
+---
+
+### `src/app/components/MarkdownSourceEditor.svelte`
+
+**Kind:** component
+
+**Owns:**
+- Markdown 源码的单一 CodeMirror 6 `EditorView`、输入同步、只读态和 IME 生命周期
+- 源码选区、聚焦、范围显示、undo/redo、行/offset 与滚动 DOM 的 handle
+- 不改 Markdown offset 和 history 的块级 CodeMirror widget spacer，以及测量完成信号
+
+**Does not own:**
+- 不决定语义块两侧应补多少高度（由 `markdownBlockAlignment.ts` 计算）
+- 不写入文件、脏状态或持久化偏好
+
+**Called by:** `src/app/components/EditorWorkspace.svelte`
+
+**Depends on:** `@codemirror/state`, `@codemirror/view`, `@codemirror/commands`, `markdownSourceEditor.ts`
+
+**Related tests:** `src/app/components/MarkdownSourceEditor.test.ts`
+
+**Confidence:** high
+
+---
+
+### `src/app/services/markdownBlockAlignment.ts`
+
+**Kind:** service
+
+**Owns:**
+- Front Matter、顶层 Markdown 块和 EOF 合成块的稳定 alignment anchor
+- 扣除已有虚拟间距后的自然推进高度比较与两侧 gap 计算
+- 1px 写入容差、映射不完整时的 fallback 结果
+
+**Does not own:**
+- 不读取 DOM、不插入 decoration、不控制模式动画
+
+**Called by:** `src/app/components/EditorWorkspace.svelte`
+
+**Depends on:** `src/lib/editor-core/markdown.ts`, `src/lib/markdown/frontMatter.ts`
+
+**Related tests:** `src/app/services/markdownBlockAlignment.test.ts`
 
 **Confidence:** high
 
@@ -667,6 +715,7 @@
 - 编辑工具栏 UI：标题、行内格式、列表、表格、公式、图表等命令按钮
 - 将按钮操作转换为 `EditorCommand` 传给编辑器核心
 - 按编辑区实际宽度分级隐藏操作按钮，并提供紧凑内容宽度面板和收起入口
+- 双栏对齐测试基准线的运行期开关
 
 **Does not own：**
 - 不拥有命令具体实现（在 editorCommands.ts 中）
@@ -789,8 +838,8 @@
 **Owns:**
 - 编辑/源码模式切换
 - 滚动锚点恢复（按大纲锚点恢复视觉焦点）
-- 源码 textarea 高度同步
-- 命令执行和 TOC 插入
+- 等待单栏总几何或双栏块对齐就绪，并用 generation 取消过期切换
+- 通过 MarkdownSourceEditor handle 执行源码 undo/redo、输入同步和 TOC 插入
 
 **Does not own：**
 - 不拥有编辑器核心创建（在 App.svelte 中）
@@ -1182,6 +1231,7 @@
 - 模式切换（语义/源码）
 - 命令执行
 - 插件和 NodeView 注册
+- 读取语义顶层块几何，并应用/清理不入 history 的块对齐 decoration
 - 生成剪贴板文本/HTML、协调 Markdown/HTML/纯文本粘贴事务，并对右键命中的块级对象执行定位、编辑或删除事务
 
 **Does not own：**
@@ -1204,7 +1254,7 @@
 - 修改具体 Markdown 语法规则
 - 修改具体渲染服务实现
 
-**Related tests:** `src/lib/editor-core/*.test.ts`（多个测试覆盖不同命令和创建流程）
+**Related tests:** `src/lib/editor-core/*.test.ts`（含 `blockAlignment.test.ts`）
 
 **Confidence:** high
 

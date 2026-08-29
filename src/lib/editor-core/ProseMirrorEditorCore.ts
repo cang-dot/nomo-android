@@ -72,6 +72,12 @@ import { contextMenuPlugin, type ContextMenuTarget } from './plugins/contextMenu
 import { searchHighlightPlugin } from './plugins/searchHighlight';
 import { windowsImePunctuationFallbackPlugin } from './plugins/windowsImePunctuationFallback';
 import {
+  blockAlignmentPlugin,
+  isSemanticBlockAlignmentTransaction,
+  setSemanticBlockAlignmentGaps,
+  type SemanticBlockAlignmentGap,
+} from './plugins/blockAlignment';
+import {
   createMarkdownInputRules,
   getMarkdownBlockLineMap,
   parseMarkdown,
@@ -183,6 +189,7 @@ export class ProseMirrorEditorCore implements EditorCore {
   private plainTextPasteResetTimer: ReturnType<typeof setTimeout> | null = null;
   private runtime: EditorRuntimeOptions;
   private listeners = new Set<EditorListener>();
+  private blockAlignmentGaps = new Map<string, number>();
 
   constructor(private readonly options: EditorCoreOptions) {
     const initialTheme = options.theme ?? {
@@ -316,10 +323,113 @@ export class ProseMirrorEditorCore implements EditorCore {
     return true;
   }
 
+  getBlockAlignmentBlockCount(): number {
+    return this.view?.state.doc.childCount ?? 0;
+  }
+
+  getBlockAlignmentGeometry(anchors: Array<{ key: string; nodeIndex: number }>) {
+    if (!this.view) return [];
+    const view = this.view;
+    return anchors
+      .filter((anchor) => anchor.nodeIndex >= 0 && anchor.nodeIndex < view.state.doc.childCount)
+      .map((anchor, index, validAnchors) => {
+        const top = this.getBlockTop(anchor.nodeIndex);
+        const nextAnchor = validAnchors[index + 1];
+        const nextTop = nextAnchor
+          ? this.getBlockTop(nextAnchor.nodeIndex)
+          : this.getBlockBottom(anchor.nodeIndex, anchor.key);
+        return {
+          key: anchor.key,
+          top,
+          nextTop: Math.max(top, nextTop),
+          existingGap: this.blockAlignmentGaps.get(anchor.key) ?? 0,
+        };
+      });
+  }
+
+  applyBlockAlignmentGaps(gaps: SemanticBlockAlignmentGap[]): void {
+    if (!this.view) return;
+    const view = this.view;
+    const scale = this.getBlockAlignmentScale();
+    const effectivePhysicalGaps = gaps.filter(
+      (gap) =>
+        gap.height > 0.05 && gap.nodeIndex >= 0 && gap.nodeIndex < view.state.doc.childCount - 1,
+    );
+    const effectiveGaps = effectivePhysicalGaps.map((gap) => ({
+      ...gap,
+      height: gap.height / scale,
+      marginCompensation: this.getBlockMarginCompensation(gap.nodeIndex),
+    }));
+    this.blockAlignmentGaps = new Map(effectivePhysicalGaps.map((gap) => [gap.key, gap.height]));
+    view.dispatch(setSemanticBlockAlignmentGaps(view.state.tr, effectiveGaps));
+  }
+
+  clearBlockAlignmentGaps(): void {
+    if (!this.view || this.blockAlignmentGaps.size === 0) return;
+    this.blockAlignmentGaps.clear();
+    this.view.dispatch(setSemanticBlockAlignmentGaps(this.view.state.tr, []));
+  }
+
+  private getBlockTop(nodeIndex: number) {
+    if (!this.view) return 0;
+    const dom = this.view.nodeDOM(this.getBlockPosition(nodeIndex));
+    return dom instanceof HTMLElement ? dom.getBoundingClientRect().top : 0;
+  }
+
+  private getBlockBottom(nodeIndex: number, key: string) {
+    if (!this.view) return 0;
+    const dom = this.view.nodeDOM(this.getBlockPosition(nodeIndex));
+    if (!(dom instanceof HTMLElement)) return this.getBlockTop(nodeIndex);
+    return dom.getBoundingClientRect().bottom + (this.blockAlignmentGaps.get(key) ?? 0);
+  }
+
+  private getBlockMarginCompensation(nodeIndex: number) {
+    if (!this.view || nodeIndex < 0 || nodeIndex >= this.view.state.doc.childCount - 1) return 0;
+    const currentDom = this.view.nodeDOM(this.getBlockPosition(nodeIndex));
+    const nextDom = this.view.nodeDOM(this.getBlockPosition(nodeIndex + 1));
+    if (!(currentDom instanceof HTMLElement) || !(nextDom instanceof HTMLElement)) return 0;
+
+    const currentMarginBottom = Math.max(
+      0,
+      Number.parseFloat(getComputedStyle(currentDom).marginBottom) || 0,
+    );
+    const nextMarginTop = Math.max(0, Number.parseFloat(getComputedStyle(nextDom).marginTop) || 0);
+    if (currentMarginBottom === 0 || nextMarginTop === 0) return 0;
+
+    return Math.min(currentMarginBottom, nextMarginTop);
+  }
+
+  private getBlockAlignmentScale() {
+    if (!this.view) return 1;
+    const host = this.view.dom.closest<HTMLElement>('.prosemirror-host') ?? this.view.dom;
+    const zoom = Number.parseFloat(getComputedStyle(host).zoom);
+    if (Number.isFinite(zoom) && zoom > 0) return zoom;
+    const rect = host.getBoundingClientRect();
+    return host.offsetWidth > 0 && rect.width > 0 ? rect.width / host.offsetWidth : 1;
+  }
+
+  private getBlockPosition(nodeIndex: number) {
+    if (!this.view) return 0;
+    let position = 0;
+    for (let index = 0; index < nodeIndex; index += 1) {
+      position += this.view.state.doc.child(index).nodeSize;
+    }
+    return position;
+  }
+
   flushMarkdown(): string {
     this.assertActive();
     this.flushPendingMarkdownSync();
     return this.markdown;
+  }
+
+  refreshSemanticView(): void {
+    this.assertActive();
+    this.flushPendingMarkdownSync();
+    if (!this.semanticViewDirty) {
+      return;
+    }
+    this.replaceViewState(this.markdown);
   }
 
   setDirty(dirty: boolean): void {
@@ -336,7 +446,7 @@ export class ProseMirrorEditorCore implements EditorCore {
     this.assertActive();
     this.flushPendingMarkdownSync();
     const previousMarkdown = this.markdown;
-    const delaySemanticSync = options?.sourceInput === true && this.runtime.mode === 'source';
+    const delaySemanticSync = options?.sourceInput === true;
     const previousDoc = delaySemanticSync
       ? null
       : (this.view?.state.doc ?? this.parseSemanticDocument(this.markdown).doc);
@@ -504,9 +614,7 @@ export class ProseMirrorEditorCore implements EditorCore {
 
     const text = input.text ?? '';
     if (options.mode === 'plain') {
-      return text
-        ? this.insertPlainClipboardText(text)
-        : { status: 'rejected', reason: 'no-text' };
+      return text ? this.insertPlainClipboardText(text) : { status: 'rejected', reason: 'no-text' };
     }
 
     const classification = text ? classifyClipboardMarkdown(text) : null;
@@ -535,9 +643,7 @@ export class ProseMirrorEditorCore implements EditorCore {
         : { status: 'rejected', reason: 'no-text' };
     }
 
-    return text
-      ? this.insertPlainClipboardText(text)
-      : { status: 'rejected', reason: 'no-text' };
+    return text ? this.insertPlainClipboardText(text) : { status: 'rejected', reason: 'no-text' };
   }
 
   private handleNativePaste(event: ClipboardEvent): boolean {
@@ -674,7 +780,9 @@ export class ProseMirrorEditorCore implements EditorCore {
     const node = this.view.state.doc.nodeAt(pos);
     if (!node) return false;
     try {
-      this.view.dispatch(this.view.state.tr.setSelection(NodeSelection.create(this.view.state.doc, pos)));
+      this.view.dispatch(
+        this.view.state.tr.setSelection(NodeSelection.create(this.view.state.doc, pos)),
+      );
       return true;
     } catch {
       return false;
@@ -686,9 +794,11 @@ export class ProseMirrorEditorCore implements EditorCore {
     if (!this.view || !this.isEditable()) return false;
     const pos = this.findContextNodePosition(target);
     if (pos === null) return false;
-    if (target.kind === 'code-block') return CodeBlockNodeView.enterEditAt(this.view, pos, 0, 'start');
+    if (target.kind === 'code-block')
+      return CodeBlockNodeView.enterEditAt(this.view, pos, 0, 'start');
     if (target.kind === 'math-block') return MathBlockNodeView.enterEditAt(this.view, pos, 'start');
-    if (target.kind === 'mermaid-block') return MermaidBlockNodeView.enterEditAt(this.view, pos, 'start');
+    if (target.kind === 'mermaid-block')
+      return MermaidBlockNodeView.enterEditAt(this.view, pos, 'start');
     return false;
   }
 
@@ -937,6 +1047,7 @@ export class ProseMirrorEditorCore implements EditorCore {
       selection: appended ? TextSelection.create(doc, doc.content.size - 1) : undefined,
       plugins: [
         windowsImePunctuationFallbackPlugin(),
+        blockAlignmentPlugin(),
         inputRules({
           rules: createMarkdownInputRules(),
         }),
@@ -1170,6 +1281,10 @@ export class ProseMirrorEditorCore implements EditorCore {
     const nextState = this.view.state.apply(transaction);
     this.view.updateState(nextState);
 
+    if (isSemanticBlockAlignmentTransaction(transaction)) {
+      return;
+    }
+
     if (transaction.docChanged) {
       this.pendingMarkdownDoc = nextState.doc;
       this.dirty = !nextState.doc.eq(this.originalDoc);
@@ -1254,6 +1369,7 @@ export class ProseMirrorEditorCore implements EditorCore {
     }
 
     const nextState = this.createState(markdown);
+    this.blockAlignmentGaps.clear();
     this.view.updateState(selection ? this.restoreSelection(nextState, selection) : nextState);
     this.semanticViewDirty = false;
   }

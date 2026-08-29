@@ -1,6 +1,7 @@
 import type { OutlineItem } from '../../lib/outline/outlineService';
 import { slugifyHeading } from '../../lib/toc/tocService';
 import { getOutlineItemAtLine } from './outlineState';
+import type { MarkdownSourceEditorHandle } from '../components/markdownSourceEditor';
 
 export type OutlineScrollAnchor =
   | {
@@ -54,12 +55,8 @@ const outlineScrollAnimations = new WeakMap<HTMLElement, number>();
 const OUTLINE_SCROLL_DURATION_MS = 260;
 const OUTLINE_SCROLL_REDUCED_DURATION_MS = 140;
 
-export function getSourceLineHeight(sourceTextarea: HTMLTextAreaElement | undefined) {
-  if (!sourceTextarea) {
-    return 24;
-  }
-  const parsed = Number.parseFloat(getComputedStyle(sourceTextarea).lineHeight);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 24;
+export function getSourceLineHeight(sourceEditor: MarkdownSourceEditorHandle | undefined) {
+  return sourceEditor?.getLineHeight() ?? 24;
 }
 
 export function getSourceHeadingSelection(markdown: string, item: OutlineItem) {
@@ -68,48 +65,25 @@ export function getSourceHeadingSelection(markdown: string, item: OutlineItem) {
   return { start, end: start + lines[item.line - 1].length };
 }
 
-function getSourceTextTopInPane(
-  sourceTextarea: HTMLTextAreaElement | undefined,
-  sourcePane: HTMLElement | undefined,
-) {
-  if (!sourceTextarea || !sourcePane) {
-    return 0;
-  }
-
-  const paneRect = sourcePane.getBoundingClientRect();
-  const textareaRect = sourceTextarea.getBoundingClientRect();
-  const hasUsableRect =
-    paneRect.top !== 0 ||
-    textareaRect.top !== 0 ||
-    textareaRect.height > 0 ||
-    textareaRect.bottom > 0;
-
-  if (hasUsableRect) {
-    return textareaRect.top - paneRect.top + sourcePane.scrollTop;
-  }
-
-  return sourceTextarea.offsetTop || 0;
-}
-
 function getSourceVisibleLine(
   scrollTop: number,
   lineHeight: number,
-  sourceTextarea: HTMLTextAreaElement | undefined,
-  sourcePane: HTMLElement | undefined,
+  sourceEditor: MarkdownSourceEditorHandle | undefined,
+  _sourcePane: HTMLElement | undefined,
 ) {
-  const textScrollTop = Math.max(0, scrollTop - getSourceTextTopInPane(sourceTextarea, sourcePane));
-  return Math.max(1, Math.floor(textScrollTop / lineHeight) + 1);
+  return (
+    sourceEditor?.lineAtHeight(scrollTop) ?? Math.max(1, Math.floor(scrollTop / lineHeight) + 1)
+  );
 }
 
 function getSourceLineTopInPane(
   sourceLine: number,
   lineHeight: number,
-  sourceTextarea: HTMLTextAreaElement | undefined,
-  sourcePane: HTMLElement | undefined,
+  sourceEditor: MarkdownSourceEditorHandle | undefined,
+  _sourcePane: HTMLElement | undefined,
 ) {
   return (
-    getSourceTextTopInPane(sourceTextarea, sourcePane) +
-    Math.max(0, Math.floor(sourceLine) - 1) * lineHeight
+    sourceEditor?.getLineTop(sourceLine) ?? Math.max(0, Math.floor(sourceLine) - 1) * lineHeight
   );
 }
 
@@ -117,13 +91,13 @@ export function getActiveOutlineIdFromSource(
   outline: OutlineItem[],
   scrollTop: number,
   lineHeight: number,
-  sourceTextarea?: HTMLTextAreaElement,
+  sourceEditor?: MarkdownSourceEditorHandle,
   sourcePane?: HTMLElement,
 ) {
   if (!outline.length) {
     return '';
   }
-  const visibleLine = getSourceVisibleLine(scrollTop, lineHeight, sourceTextarea, sourcePane);
+  const visibleLine = getSourceVisibleLine(scrollTop, lineHeight, sourceEditor, sourcePane);
   return getOutlineItemAtLine(outline, visibleLine)?.id ?? outline[0]?.id ?? '';
 }
 
@@ -131,16 +105,16 @@ export function getSourceScrollAnchor(
   outline: OutlineItem[],
   scrollTop: number,
   lineHeight: number,
-  sourceTextarea?: HTMLTextAreaElement,
+  sourceEditor?: MarkdownSourceEditorHandle,
   sourcePane?: HTMLElement,
 ): OutlineScrollAnchor | null {
-  const visibleLine = getSourceVisibleLine(scrollTop, lineHeight, sourceTextarea, sourcePane);
+  const visibleLine = getSourceVisibleLine(scrollTop, lineHeight, sourceEditor, sourcePane);
   return getSourceScrollAnchorAtLine(
     outline,
     visibleLine,
     scrollTop,
     lineHeight,
-    sourceTextarea,
+    sourceEditor,
     sourcePane,
   );
 }
@@ -150,16 +124,16 @@ export function getSourceScrollAnchorAtLine(
   sourceLine: number,
   scrollTop: number,
   lineHeight: number,
-  sourceTextarea?: HTMLTextAreaElement,
+  sourceEditor?: MarkdownSourceEditorHandle,
   sourcePane?: HTMLElement,
 ): OutlineScrollAnchor | null {
   const anchorLine = Math.max(1, Math.floor(sourceLine));
-  const sourceScrollContainer = sourcePane ?? sourceTextarea?.closest<HTMLElement>('.source-pane');
+  const sourceScrollContainer = sourcePane ?? sourceEditor?.getScrollElement();
   const documentProgress = getScrollProgress(sourceScrollContainer, scrollTop);
   const sourceLineTop = getSourceLineTopInPane(
     anchorLine,
     lineHeight,
-    sourceTextarea,
+    sourceEditor,
     sourceScrollContainer ?? undefined,
   );
 
@@ -181,7 +155,7 @@ export function getSourceScrollAnchorAtLine(
       outline,
       scrollTop,
       lineHeight,
-      sourceTextarea,
+      sourceEditor,
       sourceScrollContainer ?? undefined,
     );
   const currentIndex = Math.max(
@@ -191,7 +165,7 @@ export function getSourceScrollAnchorAtLine(
   const currentItem = outline[currentIndex] ?? outline[0];
   const nextItem = outline[currentIndex + 1];
   const totalLineCount = getSourceTotalLineCount(
-    sourceTextarea,
+    sourceEditor,
     Math.max(1, Math.floor(scrollTop / lineHeight) + 1),
   );
   const sectionEndLine = nextItem?.line ?? totalLineCount + 1;
@@ -213,7 +187,7 @@ export function getSourceScrollAnchorAtLine(
 export function scrollSourceToAnchor(
   outline: OutlineItem[],
   sourcePane: HTMLElement | undefined,
-  sourceTextarea: HTMLTextAreaElement | undefined,
+  sourceEditor: MarkdownSourceEditorHandle | undefined,
   anchor: OutlineScrollAnchor | LegacyOutlineScrollAnchor | null,
 ) {
   if (!sourcePane || !anchor) {
@@ -233,7 +207,7 @@ export function scrollSourceToAnchor(
 
   const currentItem = outline[currentIndex];
   const nextItem = outline[currentIndex + 1];
-  const totalLineCount = getSourceTotalLineCount(sourceTextarea, currentItem.line);
+  const totalLineCount = getSourceTotalLineCount(sourceEditor, currentItem.line);
   const sectionEndLine = nextItem?.line ?? totalLineCount + 1;
   const sectionLineCount = Math.max(1, sectionEndLine - currentItem.line);
   const targetLine = currentItem.line + Math.round(sectionLineCount * anchor.sectionProgress);
@@ -243,8 +217,8 @@ export function scrollSourceToAnchor(
       sourcePane,
       getSourceLineTopInPane(
         targetLine,
-        getSourceLineHeight(sourceTextarea),
-        sourceTextarea,
+        getSourceLineHeight(sourceEditor),
+        sourceEditor,
         sourcePane,
       ),
     ),
@@ -254,7 +228,7 @@ export function scrollSourceToAnchor(
 export function restoreSourceReadingPosition(
   outline: OutlineItem[],
   sourcePane: HTMLElement | undefined,
-  sourceTextarea: HTMLTextAreaElement | undefined,
+  sourceEditor: MarkdownSourceEditorHandle | undefined,
   anchor: OutlineScrollAnchor | LegacyOutlineScrollAnchor | null,
   options: ScrollToAnchorOptions = {},
 ) {
@@ -267,8 +241,8 @@ export function restoreSourceReadingPosition(
       sourcePane,
       getSourceLineTopInPane(
         anchor.anchorPos,
-        getSourceLineHeight(sourceTextarea),
-        sourceTextarea,
+        getSourceLineHeight(sourceEditor),
+        sourceEditor,
         sourcePane,
       ) + anchor.offsetFromTop,
     );
@@ -300,7 +274,7 @@ export function restoreSourceReadingPosition(
     return;
   }
 
-  scrollSourceToAnchor(outline, sourcePane, sourceTextarea, anchor);
+  scrollSourceToAnchor(outline, sourcePane, sourceEditor, anchor);
 }
 
 export function getActiveOutlineIdFromSemantic(
@@ -734,13 +708,13 @@ function getContentScrollHeight(scrollContainer: HTMLElement) {
 }
 
 function getSourceTotalLineCount(
-  sourceTextarea: HTMLTextAreaElement | undefined,
+  sourceEditor: MarkdownSourceEditorHandle | undefined,
   fallbackLine: number,
 ) {
-  if (!sourceTextarea) {
+  if (!sourceEditor) {
     return Math.max(1, fallbackLine);
   }
-  return Math.max(1, sourceTextarea.value.split(/\r?\n/).length);
+  return Math.max(1, sourceEditor.getLineCount());
 }
 
 function clamp(value: number, min: number, max: number) {
