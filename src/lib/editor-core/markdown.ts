@@ -22,6 +22,7 @@ import { transformCalloutTokens, calloutParserTokens } from './callout/calloutPa
 import { serializeCallout } from './callout/calloutSerializer';
 import { TOC_END_MARKER, TOC_START_MARKER } from '../toc/tocService';
 import { splitFrontMatterBlock } from '../markdown/frontMatter';
+import { parseWithSyncAnchors, type MarkdownSyncAnchor } from './scrollSyncMapping';
 
 const markdownIt = MarkdownIt('commonmark', { html: true }).enable(['table', 'strikethrough']);
 markdownIt.validateLink = (url: string) => normalizeLinkHref(url) !== null;
@@ -726,10 +727,26 @@ function preprocessImageHtmlWithProvenance(markdown: string): PreprocessedImageH
     },
   );
 
-  // 步骤2：独立一行的 <img src="..." ...>（不跟在 <p> 里）
+  const wrappedProvenance = Array.from(
+    { length: countMarkdownLines(result) },
+    (_value, index): MarkdownLineProvenance => {
+      const transformedLine = index + 1;
+      const collapsedRange = collapsedRanges.find((range) => range.transformedLine === transformedLine);
+      if (collapsedRange) return { fromLine: collapsedRange.fromLine, toLine: collapsedRange.toLine };
+      const removedBeforeLine = collapsedRanges.reduce(
+        (total, range) => range.transformedLine < transformedLine ? total + range.toLine - range.fromLine : total, 0,
+      );
+      const originalLine = transformedLine + removedBeforeLine;
+      return { fromLine: originalLine, toLine: originalLine };
+    },
+  );
+  const wrappedMarkdown = result;
+  const standaloneRanges: Array<{ line: number; from: number; to: number }> = [];
+  let standaloneRemoved = 0;
+  // 步骤2：保留原有图片转换行为，同时记录被空白匹配吞并的行。
   result = result.replace(
     /^<img\s+[^>]+(?:\/>|>)\s*$/gim,
-    (imgTag: string) => {
+    (imgTag: string, offset: number) => {
       const cleaned = imgTag.replace(/\/>$/, '').replace(/>$/, '').trim();
       if (/<[^>]+<[^>]+>/.test(cleaned)) return imgTag; // 含嵌套标签，不处理
       const attrs = parseHtmlImgAttrs(cleaned);
@@ -738,29 +755,28 @@ function preprocessImageHtmlWithProvenance(markdown: string): PreprocessedImageH
       if (attrs.width) parts.push(`width=${attrs.width}`);
       const titleStr = attrs.title ? ` "${attrs.title}"` : '';
       const attrsStr = parts.length > 0 ? `{${parts.join(' ')}}` : '';
+      const from = getLineNumberAtOffset(wrappedMarkdown, offset);
+      const to = getLineNumberAtOffset(wrappedMarkdown, offset + imgTag.length);
+      standaloneRanges.push({ line: from - standaloneRemoved, from, to });
+      standaloneRemoved += to - from;
       return `![${attrs.alt || ''}](${attrs.src}${titleStr})${attrsStr}`;
     },
   );
 
+  let removedBeforeLine = 0;
+  let rangeIndex = 0;
   const lineProvenance = Array.from(
     { length: countMarkdownLines(result) },
     (_value, index): MarkdownLineProvenance => {
       const transformedLine = index + 1;
-      const collapsedRange = collapsedRanges.find(
-        (range) => range.transformedLine === transformedLine,
-      );
-      if (collapsedRange) {
-        return { fromLine: collapsedRange.fromLine, toLine: collapsedRange.toLine };
+      const range = standaloneRanges[rangeIndex];
+      if (range?.line === transformedLine) {
+        rangeIndex += 1;
+        removedBeforeLine += range.to - range.from;
+        return { fromLine: wrappedProvenance[range.from - 1].fromLine,
+          toLine: wrappedProvenance[range.to - 1].toLine };
       }
-      const removedBeforeLine = collapsedRanges.reduce(
-        (total, range) =>
-          range.transformedLine < transformedLine
-            ? total + range.toLine - range.fromLine
-            : total,
-        0,
-      );
-      const originalLine = transformedLine + removedBeforeLine;
-      return { fromLine: originalLine, toLine: originalLine };
+      return wrappedProvenance[index + removedBeforeLine];
     },
   );
 
@@ -812,6 +828,30 @@ export interface MarkdownBlockLineMap {
   fromLine: number;
   toLine: number;
   nodeIndex: number;
+}
+
+/** 返回与实际解析节点绑定的嵌套来源映射；解析失败时不提供猜测锚点。 */
+export function parseMarkdownWithSyncAnchors(markdown: string): {
+  doc: ProseMirrorNode;
+  anchors: MarkdownSyncAnchor[];
+} {
+  resetHtmlInlineStack();
+  const { frontMatterPrefix, body } = splitMarkdownDocument(markdown);
+  const preprocessed = preprocessImageHtmlWithProvenance(body);
+  const bodyOffset = markdown.length - body.length;
+  const lineOffset = markdown.slice(0, bodyOffset).split('\n').length - 1;
+  try {
+    const result = parseWithSyncAnchors(tableMarkdownParser, preprocessed.markdown, (line, end) => {
+      const provenance = preprocessed.lineProvenance[line];
+      return provenance ? (end ? provenance.toLine : provenance.fromLine) + lineOffset : undefined;
+    });
+    return {
+      doc: result.doc.type.create({ ...result.doc.attrs, frontMatterPrefix }, result.doc.content, result.doc.marks),
+      anchors: result.anchors,
+    };
+  } catch {
+    return { doc: parseMarkdown(markdown), anchors: [] };
+  }
 }
 
 /**
@@ -1292,15 +1332,26 @@ function serializeTableCell(cell: ProseMirrorNode): string {
     }
     return true;
   });
-  return parts.join('').replace(/\\/g, '').replace(/\n/g, ' ').replace(/\|/g, '\\|').trim();
+  // 表格分隔符只在最终输出时转义，不能删除正文或代码中的反斜杠。
+  return parts.join('').replace(/\n/g, ' ').replace(/\|/g, '\\|').trim();
 }
 
 function serializeInlineText(node: ProseMirrorNode): string {
-  const text = escapeTableText(node.text ?? '');
+  const raw = node.text ?? '';
+  const code = node.marks.some((mark) => mark.type.name === 'code');
+  let text = escapeTableText(raw);
+  if (code) {
+    // 代码跨度内不能用反斜杠转义反引号；围栏须长于正文中的最长连续反引号。
+    const delimiter = '`'.repeat(
+      (raw.match(/`+/g) ?? []).reduce((longest, run) => Math.max(longest, run.length), 0) + 1,
+    );
+    const padding = /^`|`$/.test(raw) || (/^ .* $/.test(raw) && /[^ ]/.test(raw)) ? ' ' : '';
+    text = `${delimiter}${padding}${raw}${padding}${delimiter}`;
+  }
   return node.marks.reduce((value, mark) => {
     if (mark.type.name === 'strong') return `**${value}**`;
     if (mark.type.name === 'em') return `*${value}*`;
-    if (mark.type.name === 'code') return `\`${value.replace(/`/g, '\\`')}\``;
+    if (mark.type.name === 'code') return value;
     if (mark.type.name === 'strikethrough') return `~~${value}~~`;
     if (mark.type.name === 'underline') return `<u>${value}</u>`;
     if (mark.type.name === 'highlight') return `<mark>${value}</mark>`;
@@ -1338,7 +1389,7 @@ function splitTaskParagraph(
 }
 
 function escapeTableText(text: string): string {
-  return text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+  return text.replace(/\\/g, '\\\\');
 }
 
 function escapeMarkdownTextWithoutManualInlineMarkers(text: string): string {

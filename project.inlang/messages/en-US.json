@@ -39,7 +39,7 @@
   "sourceOnLeft": "Source left",
   "splitAdaptiveWidth": "Split mode uses adaptive content width",
   "splitDivider": "Resize split panes",
-  "toggleSplitAlignmentGuide": "Toggle split alignment test guide",
+  "toggleSplitAlignmentGuide": "Toggle scroll sync reference line",
   "autoSave": "Auto save",
   "autoSaveDescription": "Automatically writes edits to the current local file.",
   "restoreWindow": "Restore window",

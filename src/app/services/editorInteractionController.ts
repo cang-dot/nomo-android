@@ -17,6 +17,7 @@ interface EditorInteractionOptions {
   getEditor(): EditorCore;
   getLargeDocumentMode(): boolean;
   getMode(): EditorMode;
+  getSplitView?(): boolean;
   getOutline(): OutlineItem[];
   getSemanticPane(): HTMLElement | undefined;
   getSourcePane(): HTMLElement | undefined;
@@ -116,7 +117,7 @@ export function createEditorInteractionController(options: EditorInteractionOpti
 
   function updateMarkdown(markdown: string) {
     const sourceEditor = options.getSourceEditor();
-    options.setPendingSourceScrollTop(options.getSourcePane()?.scrollTop ?? null);
+    options.setPendingSourceScrollTop(options.getSplitView?.() ? null : options.getSourcePane()?.scrollTop ?? null);
     pendingSourceCaretLine = getSourceSelectionLine(sourceEditor);
     options.getEditor().setMarkdown(markdown, {
       reason: 'source-input',
@@ -288,10 +289,7 @@ export function createEditorInteractionController(options: EditorInteractionOpti
     return new Promise<'aligned' | 'degraded' | 'skipped'>((resolve) => {
       let settled = false;
       let fallbackFrames = 0;
-      const readyEventName =
-        targetViewMode === 'split'
-          ? 'nomo:editor-block-alignment-ready'
-          : 'nomo:editor-pane-geometry-ready';
+      const readyEventName = 'nomo:editor-pane-geometry-ready';
       const finish = (status: 'aligned' | 'degraded' | 'skipped') => {
         if (settled) return;
         settled = true;
@@ -306,11 +304,7 @@ export function createEditorInteractionController(options: EditorInteractionOpti
           }>
         ).detail;
         if (detail?.mode !== targetViewMode) return;
-        if (targetViewMode !== 'split') {
-          finish('aligned');
-          return;
-        }
-        if (detail.status) finish(detail.status);
+        finish('aligned');
       };
       const waitForFallback = () => {
         getRequestAnimationFrame()(() => {

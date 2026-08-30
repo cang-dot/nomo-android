@@ -39,7 +39,7 @@
   "sourceOnLeft": "原始碼在左",
   "splitAdaptiveWidth": "雙欄模式使用自適應寬度",
   "splitDivider": "調整雙欄比例",
-  "toggleSplitAlignmentGuide": "切換雙欄對齊測試線",
+  "toggleSplitAlignmentGuide": "顯示/隱藏同步參考線",
   "autoSave": "自動儲存",
   "autoSaveDescription": "編輯後自動寫入目前本機檔案。",
   "restoreWindow": "還原視窗",

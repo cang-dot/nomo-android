@@ -173,7 +173,7 @@ function createProps(markdown: string, overrides: Partial<Props> = {}): Props {
     sourcePane: undefined as unknown as HTMLElement,
     semanticPane: undefined as unknown as HTMLElement,
     editorHost: undefined as unknown as HTMLDivElement,
-    editorCore: {} as EditorCore,
+    editorCore: { subscribe: () => () => undefined } as unknown as EditorCore,
     updateMarkdown: noop,
     enterFrontMatterEdit: noop,
     leaveFrontMatterEdit: noop,

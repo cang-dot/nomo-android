@@ -39,7 +39,7 @@
   "sourceOnLeft": "源码在左",
   "splitAdaptiveWidth": "双栏模式使用自适应宽度",
   "splitDivider": "调整双栏比例",
-  "toggleSplitAlignmentGuide": "切换双栏对齐测试线",
+  "toggleSplitAlignmentGuide": "显示/隐藏同步参考线",
   "autoSave": "自动保存",
   "autoSaveDescription": "编辑后自动写入当前本地文件。",
   "restoreWindow": "还原窗口",

@@ -2,6 +2,7 @@ import type { DiagramType } from './diagramTemplates';
 import type { ImageContext } from '../services/render';
 import type { ContextMenuOpenEvent, ContextMenuTarget } from './plugins/contextMenu';
 import type { EditorThemeOptions } from '../theme/types';
+import type { EditorSyncCaret, EditorSyncSnapshot, MarkdownSyncAnchor } from './scrollSyncMapping';
 
 export type { EditorThemeOptions } from '../theme/types';
 
@@ -99,6 +100,7 @@ export interface EditorImageDeletionEvent {
 export interface EditorSelectionEvent {
   selection: EditorSelectionSnapshot | null;
   selectedMarkdown: string;
+  caret?: EditorSyncCaret;
 }
 
 export interface EditorError {
@@ -216,6 +218,9 @@ export interface EditorCore {
   getMarkdown(): string;
   flushMarkdown(): string;
   refreshSemanticView(): void;
+  getScrollSyncSnapshot(): EditorSyncSnapshot;
+  getScrollSyncAnchorRect(anchor: MarkdownSyncAnchor): { top: number; bottom: number } | null;
+  getScrollSyncCaret(): EditorSyncCaret | null;
   setMarkdown(markdown: string, options?: SetMarkdownOptions): void;
   setDirty(dirty: boolean): void;
   getSnapshot(): EditorSnapshot;

@@ -364,8 +364,6 @@
   let pendingSourceScrollTop: number | null = null;
   let splitSemanticRefreshTimer: number | null = null;
   let splitSemanticRefreshGeneration = 0;
-  let splitScrollFrame: number | null = null;
-  let splitProgrammaticScrollTarget: SplitActivePane | null = null;
   let refreshEditorViewportLayout: () => void = () => undefined;
   let largeDocumentMode = false,
     readonlyDocumentMode = false,
@@ -1417,9 +1415,8 @@
     if (nextPane === 'source') {
       // ProseMirror 的序列化是延迟的；源码区接管前必须先取得最新 Markdown。
       const latestMarkdown = editor.getMarkdown();
-      if (sourceEditor && sourceEditor.getMarkdown() !== latestMarkdown) {
-        sourceEditor.setMarkdown(latestMarkdown, { addToHistory: false });
-      }
+      // 是否有变化由源码编辑器按相同换行规则判断；切栏不制造全文替换。
+      sourceEditor?.setMarkdown(latestMarkdown, { addToHistory: false });
     } else {
       // 源码输入会延迟重建语义 DOM；语义区接管前强制刷新，避免旧 DOM 覆盖新内容。
       refreshSplitSemanticView();
@@ -1432,33 +1429,6 @@
     if (persist) {
       void updateAppSetting('splitLeftPercent', splitLeftPercent).catch(() => undefined);
     }
-  }
-
-  function scheduleSplitScrollSync(sourceMode: SplitActivePane) {
-    if (mode !== 'split' || splitProgrammaticScrollTarget === sourceMode) return;
-    if (splitScrollFrame !== null) {
-      cancelAnimationFrame(splitScrollFrame);
-    }
-    splitScrollFrame = requestAnimationFrame(() => {
-      splitScrollFrame = null;
-      if (mode !== 'split') return;
-
-      const targetMode: SplitActivePane = sourceMode === 'semantic' ? 'source' : 'semantic';
-      const sourceScrollElement = sourceMode === 'semantic' ? semanticPane : sourcePane;
-      const targetScrollElement = targetMode === 'semantic' ? semanticPane : sourcePane;
-      splitProgrammaticScrollTarget = targetMode;
-      suppressProgrammaticReadingScroll(targetMode);
-      if (sourceScrollElement && targetScrollElement) {
-        setScrollTop(targetScrollElement, sourceScrollElement.scrollTop);
-      }
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (splitProgrammaticScrollTarget === targetMode) {
-            splitProgrammaticScrollTarget = null;
-          }
-        });
-      });
-    });
   }
 
   function getReadingPositionForTab(
@@ -1523,11 +1493,6 @@
   function loadTabState(tab: Tab) {
     clearSplitSemanticRefreshTimer();
     splitSemanticRefreshGeneration += 1;
-    if (splitScrollFrame !== null) {
-      cancelAnimationFrame(splitScrollFrame);
-      splitScrollFrame = null;
-    }
-    splitProgrammaticScrollTarget = null;
     clearReadingPositionSaveTimer();
     cancelPendingReadingPositionRestore();
     selectedStats = null;
@@ -1647,27 +1612,23 @@
   function handleSemanticScroll() {
     if (
       programmaticReadingScrollTokens.has('semantic') ||
-      splitProgrammaticScrollTarget === 'semantic' ||
-      semanticPane?.dataset.nomoBlockAlignmentScroll === 'true'
+      semanticPane?.dataset.nomoSyncScroll === 'true'
     ) {
       return;
     }
     cancelPendingReadingPositionRestore();
     debounceReadingPositionSave('semantic');
-    scheduleSplitScrollSync('semantic');
   }
 
   function handleSourceScroll() {
     if (
       programmaticReadingScrollTokens.has('source') ||
-      splitProgrammaticScrollTarget === 'source' ||
-      sourcePane?.dataset.nomoBlockAlignmentScroll === 'true'
+      sourcePane?.dataset.nomoSyncScroll === 'true'
     ) {
       return;
     }
     cancelPendingReadingPositionRestore();
     debounceReadingPositionSave('source');
-    scheduleSplitScrollSync('source');
   }
 
   function debounceReadingPositionSave(modeToSave: ReadingPositionMode) {
@@ -2684,16 +2645,6 @@
         return false;
       }
 
-      if (nextMode === 'split') {
-        await tick();
-        const otherMode: SplitActivePane = splitActivePane === 'semantic' ? 'source' : 'semantic';
-        suppressProgrammaticReadingScroll(otherMode);
-        const activePane = splitActivePane === 'semantic' ? semanticPane : sourcePane;
-        const otherPane = otherMode === 'semantic' ? semanticPane : sourcePane;
-        if (activePane && otherPane) {
-          setScrollTop(otherPane, activePane.scrollTop);
-        }
-      }
       notifyModePaneReady(nextMode, modeSwitchResult.generation);
     } catch (error) {
       await tick();
@@ -4055,12 +4006,20 @@
     setStatusMessage: (value) => {
       statusMessage = value;
     },
-    onExplicitJumpIntent: cancelPendingReadingPositionRestore,
+    onExplicitJumpIntent: () => {
+      cancelPendingReadingPositionRestore();
+      if (mode === 'split') {
+        semanticPane?.closest('.editor-grid')?.dispatchEvent(new CustomEvent('nomo:scroll-sync-navigation', {
+          detail: { pane: getActiveEditorMode() },
+        }));
+      }
+    },
   });
   const editorInteraction = createEditorInteractionController({
     getEditor: () => editor,
     getLargeDocumentMode: () => largeDocumentMode,
     getMode: () => getActiveEditorMode(),
+    getSplitView: () => mode === 'split',
     getOutline: () => outline,
     getSemanticPane: () => semanticPane,
     getSourcePane: () => sourcePane,
@@ -5562,7 +5521,6 @@
     if (linkOpeningTimer !== null) window.clearTimeout(linkOpeningTimer);
     if (softwareUpdateStartupTimer !== null) window.clearTimeout(softwareUpdateStartupTimer);
     clearSplitSemanticRefreshTimer();
-    if (splitScrollFrame !== null) cancelAnimationFrame(splitScrollFrame);
     clearContentAnalysisTimer();
     clearSearchDebounceTimer();
     window.removeEventListener('keydown', handleGlobalShortcut);
@@ -6272,6 +6230,8 @@
   // 记录指向元素内的相对位置，每帧用元素的新几何位置校正滚动，
   // 避免按整页 scrollHeight 比例缩放时视角逐步向下漂移。
   function saveScrollAnchor(clientX?: number, clientY?: number): ZoomScrollAnchor | null {
+    // 双栏只重测并更新跟随栏，缩放动画不能恢复旧主栏位置、覆盖新的滚动意图。
+    if (mode === 'split') return null;
     const pane = getActiveEditorMode() === 'source' ? sourcePane : semanticPane;
     if (!pane) return null;
 

@@ -17,7 +17,7 @@
   } from '@codemirror/view';
   import { onDestroy, onMount } from 'svelte';
   import type { BlockAlignmentAnchor } from '../services/markdownBlockAlignment';
-  import type { MarkdownSourceEditorHandle } from './markdownSourceEditor';
+  import { getSourceTextChanges, type MarkdownSourceEditorHandle } from './markdownSourceEditor';
 
   export let markdown: string;
   export let documentId = '';
@@ -28,6 +28,7 @@
   export let onDrop: (event: DragEvent) => void = () => undefined;
   export let onScroll: () => void = () => undefined;
   export let onReady: (handle: MarkdownSourceEditorHandle) => void = () => undefined;
+  export let onLayoutChange: () => void = () => undefined;
   export let sourceEditor: MarkdownSourceEditorHandle;
 
   interface SourceSpacerSpec {
@@ -89,6 +90,9 @@
 
   let host: HTMLDivElement;
   let view: EditorView | null = null;
+  let cachedSourceMarkdown = markdown;
+  let layoutRevision = 0;
+  let measuredLayoutRevision = -1;
   let externalDispatchDepth = 0;
   let mountedDocumentId = documentId;
   let currentGaps = new Map<string, number>();
@@ -122,8 +126,13 @@
             },
           }),
           EditorView.updateListener.of((update) => {
+            if (update.geometryChanged || update.viewportChanged) onLayoutChange();
+            if (update.docChanged) {
+              cachedSourceMarkdown = update.state.doc.toString();
+              measureChangedContent(update.view);
+            }
             if (update.docChanged && externalDispatchDepth === 0) {
-              onMarkdownChange(update.state.doc.toString());
+              onMarkdownChange(cachedSourceMarkdown);
             }
             if (update.docChanged || update.selectionSet) {
               notifySelectionChange(update.state);
@@ -152,6 +161,8 @@
         ],
       }),
     });
+    cachedSourceMarkdown = view.state.doc.toString();
+    measureChangedContent(view);
     sourceEditor = createHandle();
     onReady(sourceEditor);
   });
@@ -179,7 +190,7 @@
     }
   }
 
-  $: if (view && markdown !== view.state.doc.toString()) {
+  $: if (view) {
     sourceEditor.setMarkdown(markdown, { addToHistory: false });
   }
 
@@ -191,15 +202,22 @@
 
   function createHandle(): MarkdownSourceEditorHandle {
     return {
-      getMarkdown: () => getView().state.doc.toString(),
+      // 滚动同步每帧读取快照，不重复拼接整个 CodeMirror 文档。
+      getMarkdown: () => {
+        getView();
+        return cachedSourceMarkdown;
+      },
       setMarkdown(nextMarkdown, options = {}) {
         const editorView = getView();
-        if (nextMarkdown === editorView.state.doc.toString()) return;
+        // 由 CodeMirror 按自己的逻辑行规则规范化，仅作用于编辑器副本。
+        const next = editorView.state.toText(nextMarkdown).toString();
+        const changes = getSourceTextChanges(cachedSourceMarkdown, next);
+        if (!changes.length) return;
         const suppressChange = !(options.addToHistory ?? false);
         if (suppressChange) externalDispatchDepth += 1;
         try {
           editorView.dispatch({
-            changes: { from: 0, to: editorView.state.doc.length, insert: nextMarkdown },
+            changes,
             annotations: Transaction.addToHistory.of(options.addToHistory ?? false),
           });
         } finally {
@@ -252,22 +270,39 @@
       getLineTop(lineNumber) {
         const editorView = getView();
         return (
-          editorView.documentPadding.top + getLineTextTop(editorView, lineNumber)
+          (editorView.documentPadding.top + getLineTextTop(editorView, lineNumber)) /
+          getViewScale(editorView)
         );
       },
       lineAtHeight(height) {
         const editorView = getView();
         const block = editorView.lineBlockAtHeight(
-          Math.max(0, height - editorView.documentPadding.top),
+          Math.max(0, height * getViewScale(editorView) - editorView.documentPadding.top),
         );
         return editorView.state.doc.lineAt(block.from).number;
       },
-      getLineHeight: () => getView().defaultLineHeight,
+      getLineHeight() {
+        const editorView = getView();
+        return editorView.defaultLineHeight / getViewScale(editorView);
+      },
+      isComposing: () => getView().composing,
+      isLayoutReady: () => view !== null && measuredLayoutRevision === layoutRevision,
+      getSyncCaretTop() {
+        const editorView = getView();
+        const coordinates = editorView.coordsAtPos(editorView.state.selection.main.head);
+        if (!coordinates) {
+          const line = editorView.state.doc.lineAt(editorView.state.selection.main.head).number;
+          return (editorView.documentPadding.top + getLineTextTop(editorView, line)) / getViewScale(editorView);
+        }
+        const rect = editorView.scrollDOM.getBoundingClientRect();
+        const scale = rect.height / editorView.scrollDOM.clientHeight || 1;
+        return (coordinates.top - rect.top) / scale + editorView.scrollDOM.scrollTop;
+      },
       getScrollElement: () => getView().scrollDOM,
       getContentElement: () => getView().contentDOM,
       // CodeMirror 的 contentHeight 包含 cm-content 的 padding。双栏尾部的
       // scroll-past-end 正是通过 padding-bottom 实现，不能反向算进正文自然高度。
-      getContentHeight: () => getNaturalContentHeight(getView()),
+      getContentHeight: () => getNaturalContentHeight(getView()) / getViewScale(getView()),
       getBlockGeometry(anchors) {
         const editorView = getView();
         const scale = getViewScale(editorView);
@@ -453,6 +488,16 @@
         read: () => undefined,
         write: () => resolve(),
       });
+    });
+  }
+
+  function measureChangedContent(editorView: EditorView) {
+    const revision = ++layoutRevision;
+    // Promise 回调在整个 measure（包括 CodeMirror 的滚动锚点调整）之后执行。
+    void requestEditorMeasure(editorView).then(() => {
+      if (view !== editorView || revision !== layoutRevision) return;
+      measuredLayoutRevision = revision;
+      onLayoutChange();
     });
   }
 

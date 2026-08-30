@@ -414,7 +414,7 @@ describe('App outline layout', () => {
 
     expect(updateSource).not.toContain('normalizeMarkdownForSave');
     expect(updateSource).toContain(
-      'options.setPendingSourceScrollTop(options.getSourcePane()?.scrollTop ?? null);',
+      'options.setPendingSourceScrollTop(options.getSplitView?.() ? null : options.getSourcePane()?.scrollTop ?? null);',
     );
     expect(updateSource).toContain("reason: 'source-input'");
     expect(updateSource).toContain('sourceInput: true');

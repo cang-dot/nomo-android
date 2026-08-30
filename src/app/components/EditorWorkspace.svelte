@@ -19,13 +19,7 @@
   import FrontMatterCard from './FrontMatterCard.svelte';
   import MarkdownSourceEditor from './MarkdownSourceEditor.svelte';
   import type { MarkdownSourceEditorHandle } from './markdownSourceEditor';
-  import {
-    calculateBlockAlignmentGaps,
-    correctBlockAlignmentGapsFromResiduals,
-    createBlockAlignmentAnchors,
-    type BlockAlignmentAnchor,
-    type BlockNaturalGeometry,
-  } from '../services/markdownBlockAlignment';
+  import { syncEditorPanes } from '../services/markdownScrollSyncWorkspace';
   import { t } from '../i18n';
   import type { EditorViewMode, SplitActivePane, SplitViewLayout } from '../types';
 
@@ -301,15 +295,17 @@
       scrollElement: HTMLElement,
       editorSurface: HTMLElement,
       bottomPadding: number,
+      source: boolean,
     ) => {
       const paneRect = scrollElement.getBoundingClientRect();
       const surfaceRect = editorSurface.getBoundingClientRect();
-      const surfaceTop = surfaceRect.top - paneRect.top + scrollElement.scrollTop;
+      const scrollScale = paneRect.height / scrollElement.clientHeight || 1;
+      const surfaceTop = (surfaceRect.top - paneRect.top) / scrollScale + scrollElement.scrollTop;
       const availableVisualHeight = Math.max(
         0,
         scrollElement.clientHeight - surfaceTop - bottomPadding - LAYOUT_ROUNDING_TOLERANCE_PX,
       );
-      const minHeight = availableVisualHeight / getEditorZoom();
+      const minHeight = source ? availableVisualHeight : availableVisualHeight / getEditorZoom();
       setPixelVariable(variableTarget, '--md-editor-content-min-height', minHeight);
     };
 
@@ -323,11 +319,11 @@
 
       const sourceFrame = paneMode === 'source' ? getSplitSourceFrame() : null;
       const scrollElement =
-        paneMode === 'source' && sourceFrame ? sourceEditor?.getScrollElement() : pane;
+        paneMode === 'source' ? sourceEditor?.getScrollElement() : pane;
       if (!scrollElement || scrollElement.clientHeight <= 0) return null;
 
       const layoutBottomPadding = Number.parseFloat(getComputedStyle(layout).paddingBottom) || 0;
-      const bottomPadding = sourceFrame?.bottom ?? layoutBottomPadding;
+      const bottomPadding = paneMode === 'source' ? (sourceFrame?.bottom ?? 0) / getEditorZoom() : layoutBottomPadding;
       if (sourceFrame && syncSplitSourceFrame(pane, sourceFrame.top, sourceFrame.bottom)) {
         scheduleUpdate();
         return null;
@@ -337,16 +333,14 @@
         scrollElement,
         editorSurface,
         paneMode === 'source' && sourceFrame ? 0 : bottomPadding,
+        paneMode === 'source',
       );
       let contentBottom: number;
       if (paneMode === 'source' && sourceEditor) {
         if (sourceFrame) {
-          contentBottom = sourceFrame.top + sourceEditor.getContentHeight();
+          contentBottom = sourceFrame.top / getEditorZoom() + sourceEditor.getContentHeight();
         } else {
-          const paneRect = pane.getBoundingClientRect();
-          const surfaceRect = editorSurface.getBoundingClientRect();
-          contentBottom =
-            surfaceRect.top - paneRect.top + pane.scrollTop + sourceEditor.getContentHeight();
+          contentBottom = sourceEditor.getLineTop(1) + sourceEditor.getContentHeight();
         }
       } else {
         contentBottom = getElementBottomInPane(pane, contentEnd);
@@ -414,58 +408,8 @@
       const sourceGeometry = needsSourceGeometry ? measurePane('source') : null;
       const semanticGeometry = needsSemanticGeometry ? measurePane('semantic') : null;
 
-      if ((params.mode === 'split' || holdSplitGeometry) && sourceGeometry && semanticGeometry) {
-        const geometries = [sourceGeometry, semanticGeometry];
-        const sharedNaturalExtent = Math.max(
-          ...geometries.map((geometry) => geometry.naturalExtent),
-          ...geometries.map((geometry) => geometry.viewportHeight),
-        );
-        const maxViewportHeight = Math.max(
-          ...geometries.map((geometry) => geometry.viewportHeight),
-        );
-        const maxBottomPadding = Math.max(...geometries.map((geometry) => geometry.bottomPadding));
-        const hasNaturalOverflow =
-          sharedNaturalExtent > maxViewportHeight + LAYOUT_ROUNDING_TOLERANCE_PX;
-        const sharedTrailingSpace = hasNaturalOverflow
-          ? Math.max(maxBottomPadding, maxViewportHeight * SCROLL_PAST_END_VIEWPORT_RATIO)
-          : maxBottomPadding;
-        const sharedLayoutHeight =
-          sharedNaturalExtent + Math.max(0, sharedTrailingSpace - maxBottomPadding);
-
-        for (const geometry of geometries) {
-          if (geometry.mode === 'source') {
-            geometry.layout.style.removeProperty('--md-editor-split-layout-min-height');
-            if (
-              setPixelVariable(
-                geometry.pane,
-                '--md-editor-split-content-min-height',
-                sharedLayoutHeight / getEditorZoom(),
-              )
-            ) {
-              sourceEditor?.requestMeasure();
-            }
-          } else {
-            geometry.pane.style.removeProperty('--md-editor-split-content-min-height');
-            setPixelVariable(
-              geometry.layout,
-              '--md-editor-split-layout-min-height',
-              sharedLayoutHeight,
-            );
-          }
-          const trailingSpaceChanged = setPixelVariable(
-            geometry.pane,
-            '--md-editor-scroll-past-end-space',
-            Math.max(0, sharedTrailingSpace - geometry.bottomPadding) /
-              (geometry.mode === 'source' ? getEditorZoom() : 1),
-          );
-          if (geometry.mode === 'source' && trailingSpaceChanged) {
-            sourceEditor?.requestMeasure();
-          }
-        }
-      } else {
-        applyIndividualGeometry(sourceGeometry);
-        applyIndividualGeometry(semanticGeometry);
-      }
+      applyIndividualGeometry(sourceGeometry);
+      applyIndividualGeometry(semanticGeometry);
 
       const targetGeometryReady =
         params.mode === 'split'
@@ -538,793 +482,6 @@
             ?.querySelector<HTMLElement>(':scope > .document-layout')
             ?.style.removeProperty('--md-editor-split-layout-min-height');
         }
-      },
-    };
-  }
-
-  interface BlockAlignmentParams {
-    mode: EditorViewMode;
-    documentId: string;
-    contentVersion: string;
-    largeDocumentMode: boolean;
-    activePane: SplitActivePane;
-  }
-
-  function alignEditorBlocks(node: HTMLElement, initialParams: BlockAlignmentParams) {
-    let params = initialParams;
-    let generation = 0;
-    let animationFrame = 0;
-    let contentSettleTimer: number | null = null;
-    let contentPendingUntil = 0;
-    let failedAlignmentFrames = 0;
-    let validationActive = false;
-    let forceAlignmentApply = false;
-    let currentSourceGaps = new Map<string, number>();
-    let currentSemanticGaps = new Map<string, number>();
-    let currentSourceLeadingGap = 0;
-    let currentSemanticLeadingGap = 0;
-    let frontMatterSemanticGap = 0;
-    const observedAlignmentTargets = new Set<Element>();
-    const programmaticScrollFrames = new Map<HTMLElement, number>();
-    const resizeObserver =
-      typeof ResizeObserver === 'function'
-        ? new ResizeObserver(() => {
-            if (!validationActive) schedule();
-          })
-        : null;
-    const mutationObserver =
-      typeof MutationObserver === 'function'
-        ? new MutationObserver((records) => {
-            if (validationActive) return;
-            if (records.every(isIgnoredAlignmentMutation)) return;
-            schedule();
-          })
-        : null;
-
-    const syncObservedAlignmentTargets = () => {
-      const nextTargets = new Set<Element>([node]);
-      if (params.mode === 'split') {
-        const sourceScrollElement = sourceEditor?.getScrollElement();
-        const sourceContentElement = sourceEditor?.getContentElement();
-        const semanticPaneElement = node.querySelector<HTMLElement>('.semantic-pane');
-        if (sourceScrollElement) nextTargets.add(sourceScrollElement);
-        if (sourceContentElement) nextTargets.add(sourceContentElement);
-        if (semanticPaneElement) nextTargets.add(semanticPaneElement);
-        const frontMatterCard = node.querySelector<HTMLElement>(
-          '.semantic-pane .front-matter-card',
-        );
-        if (frontMatterCard) nextTargets.add(frontMatterCard);
-        for (const block of node.querySelectorAll<HTMLElement>(
-          '.semantic-pane .ProseMirror > :not(.semantic-block-alignment-spacer)',
-        )) {
-          nextTargets.add(block);
-        }
-      }
-
-      for (const target of observedAlignmentTargets) {
-        if (nextTargets.has(target)) continue;
-        resizeObserver?.unobserve(target);
-        observedAlignmentTargets.delete(target);
-      }
-      for (const target of nextTargets) {
-        if (observedAlignmentTargets.has(target)) continue;
-        resizeObserver?.observe(target);
-        observedAlignmentTargets.add(target);
-      }
-    };
-
-    const clearAlignment = () => {
-      const hadSourceAlignment = currentSourceGaps.size > 0;
-      const hadSemanticAlignment =
-        currentSemanticGaps.size > 0 ||
-        currentSemanticLeadingGap > 0 ||
-        frontMatterSemanticGap > 0;
-      const hadSourceLeadingGap = currentSourceLeadingGap > 0;
-      currentSourceGaps.clear();
-      currentSemanticGaps.clear();
-      currentSourceLeadingGap = 0;
-      currentSemanticLeadingGap = 0;
-      frontMatterSemanticGap = 0;
-      forceAlignmentApply = false;
-      if (hadSourceAlignment || hadSourceLeadingGap) sourceEditor?.clearBlockGaps();
-      if (hadSemanticAlignment) editorCore?.clearBlockAlignmentGaps();
-      node
-        .querySelector<HTMLElement>('.semantic-pane > .document-layout')
-        ?.style.removeProperty('--nomo-block-alignment-leading-gap');
-      node
-        .querySelector<HTMLElement>('.semantic-pane .front-matter-card')
-        ?.style.removeProperty('--nomo-block-alignment-gap');
-    };
-
-    const getSemanticBlockCount = () => editorCore?.getBlockAlignmentBlockCount() ?? 0;
-
-    const toSemanticContentGeometry = (
-      anchors: BlockAlignmentAnchor[],
-      semanticPaneElement: HTMLElement,
-    ): BlockNaturalGeometry[] | null => {
-      const bodyAnchors = anchors.filter((anchor) => anchor.nodeIndex >= 0);
-      const paneRect = semanticPaneElement.getBoundingClientRect();
-      const bodyGeometry = editorCore.getBlockAlignmentGeometry(bodyAnchors).map((geometry) => ({
-        ...geometry,
-        top: geometry.top - paneRect.top + semanticPaneElement.scrollTop,
-        nextTop: geometry.nextTop - paneRect.top + semanticPaneElement.scrollTop,
-      }));
-      if (import.meta.env.DEV) {
-        const semanticBlocks = [
-          ...node.querySelectorAll<HTMLElement>(
-            '.semantic-pane .ProseMirror > :not(.semantic-block-alignment-spacer)',
-          ),
-        ];
-        console.info(
-          '[split-semantic-anchor-json]',
-          JSON.stringify({
-            geometry: bodyGeometry.slice(0, 6),
-            dom: semanticBlocks.slice(0, 6).map((block, index) => ({
-              index,
-              tag: block.tagName,
-              text: block.textContent?.slice(0, 80) ?? '',
-              top: block.getBoundingClientRect().top - paneRect.top + semanticPaneElement.scrollTop,
-              bottom:
-                block.getBoundingClientRect().bottom -
-                paneRect.top +
-                semanticPaneElement.scrollTop,
-            })),
-          }),
-        );
-      }
-      if (bodyGeometry.length !== bodyAnchors.length) return null;
-      if (anchors[0]?.key !== 'front-matter') return bodyGeometry;
-
-      const card = node.querySelector<HTMLElement>('.semantic-pane .front-matter-card');
-      if (!card || bodyGeometry.length === 0) return null;
-      const cardRect = card.getBoundingClientRect();
-      return [
-        {
-          key: 'front-matter',
-          top: cardRect.top - paneRect.top + semanticPaneElement.scrollTop,
-          nextTop: bodyGeometry[0].top,
-          existingGap: frontMatterSemanticGap,
-        },
-        ...bodyGeometry,
-      ];
-    };
-
-    const captureAnchor = (pane: HTMLElement, geometries: BlockNaturalGeometry[]) => {
-      const current =
-        [...geometries].reverse().find((geometry) => geometry.top <= pane.scrollTop + 2) ??
-        geometries[0];
-      return current ? { key: current.key, offset: current.top - pane.scrollTop } : null;
-    };
-
-    const restoreAnchor = (
-      pane: HTMLElement,
-      geometries: BlockNaturalGeometry[],
-      anchor: { key: string; offset: number } | null,
-    ) => {
-      if (!anchor) return;
-      const geometry = geometries.find((item) => item.key === anchor.key);
-      if (!geometry) return;
-      const nextScrollTop = Math.max(0, geometry.top - anchor.offset);
-      if (Math.abs(pane.scrollTop - nextScrollTop) <= 1) return;
-      const previousFrame = programmaticScrollFrames.get(pane);
-      if (previousFrame) cancelAnimationFrame(previousFrame);
-      pane.dataset.nomoBlockAlignmentScroll = 'true';
-      pane.scrollTop = nextScrollTop;
-      const frame = requestAnimationFrame(() => {
-        if (programmaticScrollFrames.get(pane) !== frame) return;
-        programmaticScrollFrames.delete(pane);
-        delete pane.dataset.nomoBlockAlignmentScroll;
-      });
-      programmaticScrollFrames.set(pane, frame);
-    };
-
-    const syncPassivePaneScroll = (activePane: HTMLElement, passivePane: HTMLElement) => {
-      const nextScrollTop = activePane.scrollTop;
-      if (Math.abs(passivePane.scrollTop - nextScrollTop) <= 1) return;
-      const previousFrame = programmaticScrollFrames.get(passivePane);
-      if (previousFrame) cancelAnimationFrame(previousFrame);
-      passivePane.dataset.nomoBlockAlignmentScroll = 'true';
-      passivePane.scrollTop = nextScrollTop;
-      const frame = requestAnimationFrame(() => {
-        if (programmaticScrollFrames.get(passivePane) !== frame) return;
-        programmaticScrollFrames.delete(passivePane);
-        delete passivePane.dataset.nomoBlockAlignmentScroll;
-      });
-      programmaticScrollFrames.set(passivePane, frame);
-    };
-
-    const getSemanticScale = () => {
-      const host = node.querySelector<HTMLElement>('.semantic-pane .prosemirror-host');
-      const zoom = host ? Number.parseFloat(getComputedStyle(host).zoom) : Number.NaN;
-      if (Number.isFinite(zoom) && zoom > 0) return zoom;
-      if (!host) return 1;
-      const rect = host.getBoundingClientRect();
-      return host.offsetWidth > 0 && rect.width > 0 ? rect.width / host.offsetWidth : 1;
-    };
-
-    const applyAlignment = (
-      anchors: BlockAlignmentAnchor[],
-      sourceGaps: Map<string, number>,
-      semanticGaps: Map<string, number>,
-      sourceLeadingGap: number,
-      semanticLeadingGap: number,
-    ) => {
-      if (
-        forceAlignmentApply ||
-        mapsDiffer(currentSourceGaps, sourceGaps) ||
-        Math.abs(currentSourceLeadingGap - sourceLeadingGap) > 0.05
-      ) {
-        currentSourceGaps = sourceGaps;
-        currentSourceLeadingGap = sourceLeadingGap;
-        sourceEditor.applyBlockGaps(anchors, sourceGaps, sourceLeadingGap);
-      }
-
-      if (forceAlignmentApply || mapsDiffer(currentSemanticGaps, semanticGaps)) {
-        currentSemanticGaps = semanticGaps;
-        editorCore.applyBlockAlignmentGaps(
-          anchors
-            .filter((anchor) => anchor.nodeIndex >= 0)
-            .map((anchor) => ({
-              key: anchor.key,
-              nodeIndex: anchor.nodeIndex,
-              height: semanticGaps.get(anchor.key) ?? 0,
-            })),
-        );
-      }
-
-      if (
-        forceAlignmentApply ||
-        Math.abs(currentSemanticLeadingGap - semanticLeadingGap) > 0.05
-      ) {
-        currentSemanticLeadingGap = semanticLeadingGap;
-        const semanticLayout = node.querySelector<HTMLElement>(
-          '.semantic-pane > .document-layout',
-        );
-        if (semanticLayout) {
-          if (semanticLeadingGap > 0.05) {
-            semanticLayout.style.setProperty(
-              '--nomo-block-alignment-leading-gap',
-              `${semanticLeadingGap}px`,
-            );
-          } else {
-            semanticLayout.style.removeProperty('--nomo-block-alignment-leading-gap');
-          }
-        }
-      }
-
-      const nextFrontMatterGap = semanticGaps.get('front-matter') ?? 0;
-      if (forceAlignmentApply || Math.abs(nextFrontMatterGap - frontMatterSemanticGap) > 0.05) {
-        frontMatterSemanticGap = nextFrontMatterGap;
-        const card = node.querySelector<HTMLElement>('.semantic-pane .front-matter-card');
-        if (card) {
-          card.style.setProperty(
-            '--nomo-block-alignment-gap',
-            `${nextFrontMatterGap / getSemanticScale()}px`,
-          );
-        }
-      }
-      forceAlignmentApply = false;
-    };
-
-    const dispatchAlignmentStatus = (
-      status: 'aligned' | 'degraded' | 'skipped',
-      activeGeneration: number,
-      anchorCount: number,
-      maxErrorPx: number,
-      reason?: string,
-    ) => {
-      const detail = {
-        mode: params.mode,
-        status,
-        generation: activeGeneration,
-        anchorCount,
-        maxErrorPx,
-        ...(reason ? { reason } : {}),
-      };
-      if (import.meta.env.DEV) {
-        console.info('[split-block-alignment]', detail);
-        console.info('[split-block-alignment:status-json]', JSON.stringify(detail));
-      }
-      node.dispatchEvent(
-        new CustomEvent('nomo:editor-block-alignment-ready', {
-          detail,
-        }),
-      );
-    };
-
-    const retryOrDegrade = (
-      activeGeneration: number,
-      anchorCount: number,
-      maxErrorPx: number,
-      reason: string,
-      clearInvalidAlignment = false,
-    ) => {
-      if (activeGeneration !== generation) return;
-      validationActive = false;
-      if (clearInvalidAlignment) {
-        clearAlignment();
-      }
-      failedAlignmentFrames += 1;
-      if (failedAlignmentFrames < 3) {
-        schedule();
-        return;
-      }
-      failedAlignmentFrames = 0;
-      clearAlignment();
-      dispatchAlignmentStatus('degraded', activeGeneration, anchorCount, maxErrorPx, reason);
-    };
-
-    const update = () => {
-      animationFrame = 0;
-      validationActive = false;
-      const activeGeneration = ++generation;
-      const holdSplitAlignment =
-        node.dataset.modeTransitionFrom === 'split' && node.getAttribute('aria-busy') === 'true';
-      if (params.largeDocumentMode || (params.mode !== 'split' && !holdSplitAlignment)) {
-        failedAlignmentFrames = 0;
-        clearAlignment();
-        syncObservedAlignmentTargets();
-        if (params.mode === 'split') {
-          dispatchAlignmentStatus('skipped', activeGeneration, 0, 0, 'large-document');
-        }
-        return;
-      }
-      if (params.mode !== 'split') return;
-      if (!sourceEditor || !editorCore) {
-        retryOrDegrade(activeGeneration, 0, 0, 'editor-not-ready', true);
-        return;
-      }
-
-      syncObservedAlignmentTargets();
-
-      const sourceScrollElement = sourceEditor.getScrollElement();
-      const semanticPaneElement = node.querySelector<HTMLElement>('.semantic-pane');
-      if (!semanticPaneElement || sourceScrollElement.clientHeight <= 0) {
-        retryOrDegrade(activeGeneration, 0, 0, 'pane-not-measurable', true);
-        return;
-      }
-      const stableSemanticPaneElement = semanticPaneElement;
-
-      const anchors = createBlockAlignmentAnchors(params.contentVersion, getSemanticBlockCount());
-      if (anchors.length === 0) {
-        retryOrDegrade(activeGeneration, 0, 0, 'anchor-map-empty', true);
-        return;
-      }
-      const sourceGeometry = sourceEditor.getBlockGeometry(anchors);
-      const semanticGeometry = toSemanticContentGeometry(anchors, stableSemanticPaneElement);
-      if (!semanticGeometry) {
-        retryOrDegrade(activeGeneration, anchors.length, 0, 'geometry-count-mismatch', true);
-        return;
-      }
-      const activeScrollElement =
-        params.activePane === 'source' ? sourceScrollElement : stableSemanticPaneElement;
-      const passiveScrollElement =
-        params.activePane === 'source' ? stableSemanticPaneElement : sourceScrollElement;
-      const activeGeometry = params.activePane === 'source' ? sourceGeometry : semanticGeometry;
-      const activeAnchor = captureAnchor(activeScrollElement, activeGeometry);
-      const result = calculateBlockAlignmentGaps(
-        sourceGeometry,
-        semanticGeometry,
-        activeGeneration,
-        0.05,
-      );
-      if (result.status !== 'ready') {
-        retryOrDegrade(activeGeneration, anchors.length, 0, 'geometry-invalid', true);
-        return;
-      }
-
-      const alignableKeys = new Set(anchors.slice(0, -1).map((anchor) => anchor.key));
-      let sourceGaps = new Map(
-        result.gaps
-          .filter((gap) => alignableKeys.has(gap.key))
-          .map((gap) => [gap.key, gap.sourceGap]),
-      );
-      let semanticGaps = new Map(
-        result.gaps
-          .filter((gap) => alignableKeys.has(gap.key))
-          .map((gap) => [gap.key, gap.semanticGap]),
-      );
-      const naturalSourceOrigin = sourceGeometry[0].top - currentSourceLeadingGap;
-      const naturalSemanticOrigin = semanticGeometry[0].top - currentSemanticLeadingGap;
-      let { sourceLeadingGap, semanticLeadingGap } = splitAlignmentGap(
-        naturalSourceOrigin - naturalSemanticOrigin,
-      );
-      let correctionRound = 0;
-      applyAlignment(
-        anchors,
-        sourceGaps,
-        semanticGaps,
-        sourceLeadingGap,
-        semanticLeadingGap,
-      );
-      validationActive = true;
-      void Promise.resolve(sourceEditor.requestMeasure())
-        .then(() => validateAlignment(2))
-        .catch(() => {
-          retryOrDegrade(activeGeneration, anchors.length, 0, 'source-measure-failed', true);
-        });
-
-      function finishDegradedAlignment(maxErrorPx: number, reason: string) {
-        if (activeGeneration !== generation) return;
-        validationActive = true;
-        clearAlignment();
-        const finish = () => {
-          requestAnimationFrame(() => {
-            if (activeGeneration !== generation || params.mode !== 'split') {
-              validationActive = false;
-              return;
-            }
-            const clearedSourceGeometry = sourceEditor.getBlockGeometry(anchors);
-            const clearedSemanticGeometry = toSemanticContentGeometry(
-              anchors,
-              stableSemanticPaneElement,
-            );
-            const clearedActiveGeometry =
-              params.activePane === 'source'
-                ? clearedSourceGeometry
-                : clearedSemanticGeometry;
-            if (clearedActiveGeometry) {
-              restoreAnchor(activeScrollElement, clearedActiveGeometry, activeAnchor);
-              syncPassivePaneScroll(activeScrollElement, passiveScrollElement);
-            }
-            validationActive = false;
-            failedAlignmentFrames = 0;
-            dispatchAlignmentStatus(
-              'degraded',
-              activeGeneration,
-              anchors.length,
-              maxErrorPx,
-              reason,
-            );
-          });
-        };
-        void Promise.resolve(sourceEditor.requestMeasure()).then(finish, finish);
-      }
-
-      function validateAlignment(stableFramesRemaining: number) {
-        requestAnimationFrame(() => {
-          if (activeGeneration !== generation || params.mode !== 'split') {
-            validationActive = false;
-            return;
-          }
-          const nextSourceGeometry = sourceEditor.getBlockGeometry(anchors);
-          const nextSemanticGeometry = toSemanticContentGeometry(
-            anchors,
-            stableSemanticPaneElement,
-          );
-          if (!nextSemanticGeometry || nextSourceGeometry.length !== nextSemanticGeometry.length) {
-            retryOrDegrade(
-              activeGeneration,
-              anchors.length,
-              0,
-              'validation-geometry-mismatch',
-              true,
-            );
-            return;
-          }
-          const sourceOrigin = nextSourceGeometry[0]?.top ?? 0;
-          const semanticOrigin = nextSemanticGeometry[0]?.top ?? 0;
-          if (import.meta.env.DEV) {
-            const sourcePaneRect = sourceScrollElement.getBoundingClientRect();
-            const semanticPaneRect = stableSemanticPaneElement.getBoundingClientRect();
-            console.info(
-              '[split-block-alignment:origin-json]',
-              JSON.stringify({
-                generation: activeGeneration,
-                correctionRound,
-                sourceOrigin,
-                semanticOrigin,
-                originDifference: sourceOrigin - semanticOrigin,
-                sourceScrollTop: sourceScrollElement.scrollTop,
-                semanticScrollTop: stableSemanticPaneElement.scrollTop,
-                sourceScreenTop:
-                  sourcePaneRect.top + sourceOrigin - sourceScrollElement.scrollTop,
-                semanticScreenTop:
-                  semanticPaneRect.top +
-                  semanticOrigin -
-                  stableSemanticPaneElement.scrollTop,
-              }),
-            );
-          }
-          const maximumStartDifference = Math.max(
-            0,
-            ...nextSourceGeometry.map((geometry, index) =>
-              Math.abs(geometry.top - nextSemanticGeometry[index].top),
-            ),
-          );
-          if (stableFramesRemaining > 1) {
-            void Promise.resolve(sourceEditor.requestMeasure())
-              .then(() => validateAlignment(stableFramesRemaining - 1))
-              .catch(() => {
-                finishDegradedAlignment(maximumStartDifference, 'source-measure-failed');
-              });
-            return;
-          }
-          if (import.meta.env.DEV && maximumStartDifference > 2) {
-            const differences = nextSourceGeometry.map((geometry, index) => ({
-              key: geometry.key,
-              difference: geometry.top - nextSemanticGeometry[index].top,
-              sourceGap: sourceGaps.get(geometry.key) ?? 0,
-              semanticGap: semanticGaps.get(geometry.key) ?? 0,
-            }));
-            const worst = differences.reduce((current, item) =>
-              Math.abs(item.difference) > Math.abs(current.difference) ? item : current,
-            );
-            const residualSteps = differences
-              .slice(0, -1)
-              .map((item, index) => ({
-                index,
-                key: item.key,
-                step: differences[index + 1].difference - item.difference,
-                sourceGap: item.sourceGap,
-                semanticGap: item.semanticGap,
-              }))
-              .sort((left, right) => Math.abs(right.step) - Math.abs(left.step))
-              .slice(0, 12);
-            console.info(
-              '[split-block-alignment:residual-json]',
-              JSON.stringify({
-                generation: activeGeneration,
-                correctionRound,
-                maximumStartDifference,
-                worst,
-                residualSteps,
-              }),
-            );
-            console.info('[split-block-alignment:validation]', {
-              generation: activeGeneration,
-              correctionRound,
-              maximumStartDifference,
-              worst,
-              differences,
-              sourceSpacers: [
-                ...node.querySelectorAll<HTMLElement>('.source-block-alignment-spacer'),
-              ].map((spacer) => ({
-                key: spacer.dataset.alignmentKey,
-                styleHeight: spacer.style.height,
-                rectHeight: spacer.getBoundingClientRect().height,
-              })),
-              semanticSpacers: [
-                ...node.querySelectorAll<HTMLElement>('.semantic-block-alignment-spacer'),
-              ].map((spacer) => ({
-                key: spacer.dataset.alignmentKey,
-                styleHeight: spacer.style.height,
-                rectHeight: spacer.getBoundingClientRect().height,
-              })),
-            });
-          }
-          if (maximumStartDifference > 2) {
-            if (correctionRound >= 3) {
-              finishDegradedAlignment(maximumStartDifference, 'not-converged');
-              return;
-            }
-            const currentGaps = anchors.map((anchor) => ({
-              key: anchor.key,
-              sourceGap: sourceGaps.get(anchor.key) ?? 0,
-              semanticGap: semanticGaps.get(anchor.key) ?? 0,
-            }));
-            const correctedResult = correctBlockAlignmentGapsFromResiduals(
-              nextSourceGeometry,
-              nextSemanticGeometry,
-              currentGaps,
-              activeGeneration,
-              0.05,
-            );
-            if (correctedResult.status !== 'ready') {
-              finishDegradedAlignment(maximumStartDifference, 'residual-geometry-invalid');
-              return;
-            }
-            const correctedSourceGaps = new Map(
-              correctedResult.gaps
-                .filter((gap) => alignableKeys.has(gap.key))
-                .map((gap) => [gap.key, gap.sourceGap]),
-            );
-            const correctedSemanticGaps = new Map(
-              correctedResult.gaps
-                .filter((gap) => alignableKeys.has(gap.key))
-                .map((gap) => [gap.key, gap.semanticGap]),
-            );
-            const correctedLeadingGaps = correctAlignmentGapFromResidual(
-              sourceLeadingGap,
-              semanticLeadingGap,
-              sourceOrigin - semanticOrigin,
-            );
-            correctionRound += 1;
-            if (
-              !mapsDiffer(sourceGaps, correctedSourceGaps) &&
-              !mapsDiffer(semanticGaps, correctedSemanticGaps) &&
-              Math.abs(sourceLeadingGap - correctedLeadingGaps.sourceLeadingGap) <= 0.05 &&
-              Math.abs(semanticLeadingGap - correctedLeadingGaps.semanticLeadingGap) <= 0.05
-            ) {
-              finishDegradedAlignment(maximumStartDifference, 'residual-stalled');
-              return;
-            }
-            sourceGaps = correctedSourceGaps;
-            semanticGaps = correctedSemanticGaps;
-            sourceLeadingGap = correctedLeadingGaps.sourceLeadingGap;
-            semanticLeadingGap = correctedLeadingGaps.semanticLeadingGap;
-            applyAlignment(
-              anchors,
-              sourceGaps,
-              semanticGaps,
-              sourceLeadingGap,
-              semanticLeadingGap,
-            );
-            void Promise.resolve(sourceEditor.requestMeasure())
-              .then(() => validateAlignment(2))
-              .catch(() => {
-                finishDegradedAlignment(maximumStartDifference, 'source-measure-failed');
-              });
-            return;
-          }
-          restoreAnchor(
-            activeScrollElement,
-            params.activePane === 'source' ? nextSourceGeometry : nextSemanticGeometry,
-            activeAnchor,
-          );
-          syncPassivePaneScroll(activeScrollElement, passiveScrollElement);
-          validationActive = false;
-          failedAlignmentFrames = 0;
-          dispatchAlignmentStatus(
-            'aligned',
-            activeGeneration,
-            anchors.length,
-            maximumStartDifference,
-          );
-          node.dispatchEvent(
-            new CustomEvent('nomo:editor-pane-geometry-ready', {
-              detail: { mode: 'split' },
-            }),
-          );
-        });
-      }
-    };
-
-    function mapsDiffer(current: Map<string, number>, next: Map<string, number>) {
-      if (current.size !== next.size) return true;
-      for (const [key, value] of next) {
-        if (Math.abs((current.get(key) ?? 0) - value) > 0.05) return true;
-      }
-      return false;
-    }
-
-    function splitAlignmentGap(sourceMinusSemantic: number) {
-      const roundedDifference = Math.round(sourceMinusSemantic * 10) / 10;
-      return roundedDifference > 0
-        ? { sourceLeadingGap: 0, semanticLeadingGap: roundedDifference }
-        : { sourceLeadingGap: -roundedDifference, semanticLeadingGap: 0 };
-    }
-
-    function correctAlignmentGapFromResidual(
-      sourceLeadingGap: number,
-      semanticLeadingGap: number,
-      sourceMinusSemantic: number,
-    ) {
-      // 当前残差 = 自然起点差 +（源码补偿 - 语义补偿）。先还原自然起点差，
-      // 再由 splitAlignmentGap 把较短侧补到较长侧；这里不能直接传补偿净值减残差，
-      // 否则会把修正写到相反的一栏并在每轮放大首块偏差。
-      return splitAlignmentGap(
-        sourceMinusSemantic - (sourceLeadingGap - semanticLeadingGap),
-      );
-    }
-
-    function isIgnoredAlignmentMutation(record: MutationRecord) {
-      const changedNodes = [...record.addedNodes, ...record.removedNodes];
-      return changedNodes.length > 0 && changedNodes.every(isAlignmentSpacerNode);
-    }
-
-    function isAlignmentSpacerNode(changedNode: Node) {
-      return (
-        changedNode instanceof Element &&
-        changedNode.matches('.source-block-alignment-spacer, .semantic-block-alignment-spacer')
-      );
-    }
-
-    function schedule() {
-      const remainingDelay = contentPendingUntil - Date.now();
-      if (remainingDelay > 0) {
-        if (contentSettleTimer !== null) window.clearTimeout(contentSettleTimer);
-        contentSettleTimer = window.setTimeout(() => {
-          contentSettleTimer = null;
-          schedule();
-        }, remainingDelay);
-        return;
-      }
-      if (animationFrame) return;
-      animationFrame = requestAnimationFrame(update);
-    }
-
-    const handleRefresh = () => schedule();
-    const handleTransitionComplete = () => {
-      if (params.mode !== 'split') {
-        const anchors = createBlockAlignmentAnchors(params.contentVersion, getSemanticBlockCount());
-        const semanticPaneElement = node.querySelector<HTMLElement>('.semantic-pane');
-        const targetPane =
-          params.mode === 'source' ? sourceEditor?.getScrollElement() : semanticPaneElement;
-        const beforeGeometry =
-          params.mode === 'source'
-            ? sourceEditor?.getBlockGeometry(anchors)
-            : semanticPaneElement
-              ? toSemanticContentGeometry(anchors, semanticPaneElement)
-              : null;
-        const anchor =
-          targetPane && beforeGeometry ? captureAnchor(targetPane, beforeGeometry) : null;
-        clearAlignment();
-        requestAnimationFrame(() => {
-          if (!targetPane || !anchor) return;
-          const afterGeometry =
-            params.mode === 'source'
-              ? sourceEditor?.getBlockGeometry(anchors)
-              : semanticPaneElement
-                ? toSemanticContentGeometry(anchors, semanticPaneElement)
-                : null;
-          if (afterGeometry) restoreAnchor(targetPane, afterGeometry, anchor);
-        });
-      }
-      schedule();
-    };
-    node.addEventListener('nomo:editor-viewport-layout-refresh', handleRefresh);
-    node.addEventListener('nomo:mode-pane-transition-complete', handleTransitionComplete);
-    mutationObserver?.observe(node, { childList: true, subtree: true, characterData: true });
-    resizeObserver?.observe(node);
-    window.addEventListener('resize', schedule);
-    schedule();
-
-    return {
-      update(nextParams: BlockAlignmentParams) {
-        const documentChanged = nextParams.documentId !== params.documentId;
-        const contentChanged = nextParams.contentVersion !== params.contentVersion;
-        const modeChanged = nextParams.mode !== params.mode;
-        const largeDocumentModeChanged =
-          nextParams.largeDocumentMode !== params.largeDocumentMode;
-        const activePaneChanged = nextParams.activePane !== params.activePane;
-        const alignmentInputsChanged =
-          documentChanged ||
-          contentChanged ||
-          modeChanged ||
-          largeDocumentModeChanged ||
-          activePaneChanged;
-        if (documentChanged) clearAlignment();
-        if (documentChanged || contentChanged) {
-          forceAlignmentApply = contentChanged;
-          failedAlignmentFrames = 0;
-          contentPendingUntil = Date.now() + 170;
-        }
-        if (
-          modeChanged ||
-          largeDocumentModeChanged ||
-          activePaneChanged
-        ) {
-          failedAlignmentFrames = 0;
-        }
-        if (params.mode !== 'split' && nextParams.mode === 'split') {
-          contentPendingUntil = 0;
-        }
-        if (
-          (params.mode === 'split' && nextParams.mode !== 'split') ||
-          (!params.largeDocumentMode && nextParams.largeDocumentMode)
-        ) {
-          clearAlignment();
-        }
-        params = nextParams;
-        if (alignmentInputsChanged) schedule();
-      },
-      destroy() {
-        generation += 1;
-        validationActive = false;
-        if (animationFrame) cancelAnimationFrame(animationFrame);
-        if (contentSettleTimer !== null) window.clearTimeout(contentSettleTimer);
-        resizeObserver?.disconnect();
-        mutationObserver?.disconnect();
-        node.removeEventListener('nomo:editor-viewport-layout-refresh', handleRefresh);
-        node.removeEventListener('nomo:mode-pane-transition-complete', handleTransitionComplete);
-        window.removeEventListener('resize', schedule);
-        for (const [pane, frame] of programmaticScrollFrames) {
-          cancelAnimationFrame(frame);
-          delete pane.dataset.nomoBlockAlignmentScroll;
-        }
-        programmaticScrollFrames.clear();
-        clearAlignment();
       },
     };
   }
@@ -1635,12 +792,15 @@
     class:split-resizing={splitResizePointerId !== null}
     style={`--split-left-track: ${splitLeftPercent}fr; --split-right-track: ${100 - splitLeftPercent}fr`}
     use:coordinateEditorPaneGeometry={{ mode, contentVersion: markdown }}
-    use:alignEditorBlocks={{
+    use:syncEditorPanes={{
       mode,
       documentId: sourceDocumentId,
-      contentVersion: markdown,
+      markdown,
+      sourceEditor,
+      editorCore,
       largeDocumentMode,
       activePane: splitActivePane,
+      paused: splitResizePointerId !== null,
     }}
     use:modePaneMotion={{ mode, disabled: largeDocumentMode }}
   >
@@ -1663,7 +823,11 @@
           documentId={sourceDocumentId}
           {readonlyDocumentMode}
           onMarkdownChange={updateMarkdown}
-          onSelectionChange={onSourceSelectionChange}
+          onSelectionChange={(selected) => {
+            onSourceSelectionChange(selected);
+            editorGrid?.dispatchEvent(new Event('nomo:source-caret-change'));
+          }}
+          onLayoutChange={() => editorGrid?.dispatchEvent(new Event('nomo:source-layout-change'))}
           onPaste={handleEditorPaste}
           onDrop={handleEditorDrop}
           onReady={handleSourceEditorReady}

@@ -40,7 +40,7 @@
   "sourceOnLeft": "ソースを左",
   "splitAdaptiveWidth": "分割モードでは幅を自動調整します",
   "splitDivider": "分割比率を調整",
-  "toggleSplitAlignmentGuide": "分割配置のテストガイドを切り替え",
+  "toggleSplitAlignmentGuide": "スクロール同期の基準線を表示/非表示",
   "autoSave": "自動保存",
   "autoSaveDescription": "現在のローカルファイルへ編集内容を自動的に書き込みます。",
   "restoreWindow": "ウィンドウを復元",

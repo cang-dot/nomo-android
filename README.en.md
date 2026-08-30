@@ -61,6 +61,7 @@ The Windows NSIS installer and macOS app declare support for opening `.md`, `.ma
 ### Markdown Editing and Rendering
 
 - **Semantic editing and source mode**: ProseMirror renders Markdown as you type while semantic and source editing continue to operate on the same document. You can choose the default mode.
+- **Split content following**: Both panes keep their natural heights. Content anchors at 30% of each viewport map scrolling continuously without alignment spacers. Manual scrolling takes priority; caret assistance only scrolls the other pane when the corresponding position leaves its 15%–85% visibility band. Pane order, split ratio and an optional reference line remain available. Complex graphics use approximate block positions.
 - **Encoding-safe saves**: Markdown opens and preserves UTF-8, UTF-8 BOM, UTF-16 LE / BE BOM, and GBK. Atomic replacement prevents interrupted saves from leaving a partially written file.
 - **Complete document elements**: H1–H6, paragraphs, hard breaks, bold, italic, underline, strikethrough, highlight, links, inline code and math, lists, task lists, blockquotes, five callout types, front matter, footnotes, comments, horizontal rules, and safe HTML.
 - **Technical content editing**: Code blocks provide Shiki highlighting, titles, language selection, copying, line numbers, and indentation preferences. KaTeX handles inline and display math. Mermaid includes flowchart, sequence, class, state, pie, Gantt, and ER templates, live previews, and fullscreen viewing.

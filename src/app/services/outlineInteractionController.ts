@@ -101,10 +101,9 @@ export function createOutlineInteractionController(options: OutlineInteractionOp
 
       sourceEditor.focus({ preventScroll: true });
       sourceEditor.setSelection(selection.end);
-      const lineHeightPx = getSourceLineHeight();
       if (sourcePane) {
         setScrollTop(sourcePane, restoreScrollTop);
-        smoothScrollElementTo(sourcePane, Math.max(0, (item.line - 1) * lineHeightPx - 40));
+        smoothScrollElementTo(sourcePane, Math.max(0, sourceEditor.getLineTop(item.line) - 40));
       }
     });
   }
