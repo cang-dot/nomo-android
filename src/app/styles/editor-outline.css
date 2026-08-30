@@ -20,6 +20,11 @@
   user-select: none;
 }
 
+.editor-grid.split-view > .content-outline,
+.editor-grid[data-mode-transition-from='split'] > .content-outline {
+  background: color-mix(in srgb, var(--md-editor-surface) 92%, transparent);
+}
+
 .content-outline-header {
   display: flex;
   align-items: center;

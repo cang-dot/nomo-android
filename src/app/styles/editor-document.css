@@ -176,9 +176,11 @@
   min-height: 0;
 }
 
+/* 双栏及退出过渡中，大纲仅覆盖正文，不参与正文宽度分配。 */
 .editor-grid.split-view .document-layout,
 .editor-grid[data-mode-transition-from='split'] .document-layout,
-.editor-grid.split-view:has(> .content-outline) .document-layout {
+.editor-grid:is(.split-view, [data-mode-transition-from='split']):has(> .content-outline)
+  .document-layout {
   grid-template-columns: minmax(0, 1fr);
   justify-content: stretch;
   min-height: var(--md-editor-split-layout-min-height, 100%);
@@ -207,20 +209,21 @@
 .editor-grid[data-mode-transition-from='split'] .document-layout > .source-editor,
 .editor-grid[data-mode-transition-from='split'] .document-layout > .editor-scroll-past-end,
 .editor-grid[data-mode-transition-from='split'] .document-layout > .front-matter-card,
-.editor-grid.split-view:has(> .content-outline) .document-layout > .prosemirror-host,
-.editor-grid.split-view:has(> .content-outline) .document-layout > .source-editor,
-.editor-grid.split-view:has(> .content-outline) .document-layout > .editor-scroll-past-end,
-.editor-grid.split-view:has(> .content-outline) .document-layout > .front-matter-card {
+.editor-grid:is(.split-view, [data-mode-transition-from='split']):has(> .content-outline)
+  .document-layout
+  > .prosemirror-host,
+.editor-grid:is(.split-view, [data-mode-transition-from='split']):has(> .content-outline)
+  .document-layout
+  > .source-editor,
+.editor-grid:is(.split-view, [data-mode-transition-from='split']):has(> .content-outline)
+  .document-layout
+  > .editor-scroll-past-end,
+.editor-grid:is(.split-view, [data-mode-transition-from='split']):has(> .content-outline)
+  .document-layout
+  > .front-matter-card {
   grid-column: 1;
   width: 100%;
   max-width: none;
-}
-
-.editor-grid.split-view:has(> .content-outline) .split-pane-right .document-layout,
-.editor-grid[data-mode-transition-from='split']:has(> .content-outline)
-  .split-pane-right
-  .document-layout {
-  padding-right: calc(24px + min(224px, 24cqw));
 }
 
 .editor-grid:has(> .content-outline) .document-layout {
