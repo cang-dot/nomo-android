@@ -1,3 +1,6 @@
+import MarkdownIt from 'markdown-it';
+import type Token from 'markdown-it/lib/token.mjs';
+
 export interface OutlineItem {
   id: string;
   level: 1 | 2 | 3 | 4 | 5 | 6;
@@ -8,10 +11,16 @@ export interface OutlineItem {
 export interface DocumentStats {
   chars: number;
   words: number;
+  visibleChars: number;
   lines: number;
   headings: number;
   readingMinutes: number;
 }
+
+const writingStatsMarkdown = MarkdownIt('commonmark', { html: true }).enable([
+  'table',
+  'strikethrough',
+]);
 
 export function extractOutline(markdown: string): OutlineItem[] {
   return analyzeMarkdown(markdown).outline;
@@ -31,6 +40,7 @@ export function analyzeMarkdown(markdown: string): {
       stats: {
         chars: 0,
         words: 0,
+        visibleChars: 0,
         lines: 1,
         headings: 0,
         readingMinutes: 1,
@@ -93,11 +103,76 @@ export function analyzeMarkdown(markdown: string): {
     stats: {
       chars: markdown.length,
       words,
+      visibleChars: countVisibleCharacters(markdown),
       lines: lines.length,
       headings: outline.length,
       readingMinutes: Math.max(1, Math.ceil(words / 280)),
     },
   };
+}
+
+function countVisibleCharacters(markdown: string): number {
+  const visibleText = extractVisibleMarkdownText(markdown);
+  const Segmenter = (
+    Intl as typeof Intl & {
+      Segmenter?: new (
+        locales?: string | string[],
+        options?: { granularity: 'grapheme' },
+      ) => { segment(input: string): Iterable<{ segment: string }> };
+    }
+  ).Segmenter;
+  const segments =
+    typeof Segmenter === 'function'
+      ? Array.from(
+          new Segmenter(undefined, { granularity: 'grapheme' }).segment(visibleText),
+          ({ segment }) => segment,
+        )
+      : Array.from(visibleText);
+
+  return segments.filter((segment) => !/^\s+$/u.test(segment)).length;
+}
+
+function extractVisibleMarkdownText(markdown: string): string {
+  const visibleParts: string[] = [];
+  appendVisibleTokenText(writingStatsMarkdown.parse(markdown, {}), visibleParts);
+  return visibleParts.join('');
+}
+
+function appendVisibleTokenText(tokens: readonly Token[], visibleParts: string[]): void {
+  for (const token of tokens) {
+    if (token.type === 'image') {
+      visibleParts.push(token.content);
+      continue;
+    }
+
+    if (
+      token.type === 'text' ||
+      token.type === 'code_inline' ||
+      token.type === 'code_block' ||
+      token.type === 'fence'
+    ) {
+      visibleParts.push(token.content);
+      continue;
+    }
+
+    if (token.type === 'softbreak' || token.type === 'hardbreak') {
+      visibleParts.push('\n');
+      continue;
+    }
+
+    if (token.type === 'html_inline' || token.type === 'html_block') {
+      visibleParts.push(stripHtmlSyntax(token.content));
+      continue;
+    }
+
+    if (token.children?.length) {
+      appendVisibleTokenText(token.children, visibleParts);
+    }
+  }
+}
+
+function stripHtmlSyntax(html: string): string {
+  return html.replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]*>/g, '');
 }
 
 function slugifyHeading(title: string): string {

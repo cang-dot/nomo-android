@@ -72,9 +72,16 @@ import { contextMenuPlugin, type ContextMenuTarget } from './plugins/contextMenu
 import { searchHighlightPlugin } from './plugins/searchHighlight';
 import { windowsImePunctuationFallbackPlugin } from './plugins/windowsImePunctuationFallback';
 import {
+  blockAlignmentPlugin,
+  isSemanticBlockAlignmentTransaction,
+  setSemanticBlockAlignmentGaps,
+  type SemanticBlockAlignmentGap,
+} from './plugins/blockAlignment';
+import {
   createMarkdownInputRules,
   getMarkdownBlockLineMap,
   parseMarkdown,
+  parseMarkdownWithSyncAnchors,
   serializeMarkdown,
   serializeMarkdownSelection,
   splitFrontMatter,
@@ -107,11 +114,13 @@ import type {
   InlinePendingMarks,
   EditorRuntimeOptions,
   EditorImageDeletionEvent,
+  EditorSelectionEvent,
   EditorSnapshot,
   EditorThemeOptions,
   SetMarkdownOptions,
 } from './types';
 import { isWholeWordRange } from '../search/textSearch';
+import type { EditorSyncCaret, EditorSyncSnapshot, MarkdownSyncAnchor } from './scrollSyncMapping';
 
 const LARGE_DOCUMENT_SEMANTIC_LIMIT = 300_000;
 const MARKDOWN_SYNC_DEBOUNCE_MS = 120;
@@ -182,6 +191,10 @@ export class ProseMirrorEditorCore implements EditorCore {
   private plainTextPasteResetTimer: ReturnType<typeof setTimeout> | null = null;
   private runtime: EditorRuntimeOptions;
   private listeners = new Set<EditorListener>();
+  private blockAlignmentGaps = new Map<string, number>();
+  private contentRevision = 0;
+  private syncRenderRevision = 0;
+  private syncSnapshot: EditorSyncSnapshot | null = null;
 
   constructor(private readonly options: EditorCoreOptions) {
     const initialTheme = options.theme ?? {
@@ -315,10 +328,206 @@ export class ProseMirrorEditorCore implements EditorCore {
     return true;
   }
 
+  getBlockAlignmentBlockCount(): number {
+    return this.view?.state.doc.childCount ?? 0;
+  }
+
+  getScrollSyncSnapshot(): EditorSyncSnapshot {
+    if (!this.view || this.semanticViewDirty || this.pendingMarkdownDoc) {
+      return { revision: this.contentRevision, renderRevision: this.syncRenderRevision,
+        ready: false, markdown: this.markdown, anchors: [] };
+    }
+    if (this.syncSnapshot?.revision === this.contentRevision) return this.syncSnapshot;
+    const parsed = parseMarkdownWithSyncAnchors(this.markdown);
+    const currentDoc = this.view.state.doc;
+    // 复杂块的序列化可能多出软换行。用结构差异的已确认前后缀换算偏移，
+    // 不能因局部节点长度不同而丢弃后续整篇锚点，也不按块数或文字搜索猜位置。
+    const diffStart = parsed.doc.content.findDiffStart(currentDoc.content);
+    const diffEnd = diffStart == null ? null : parsed.doc.content.findDiffEnd(currentDoc.content);
+    const anchors = parsed.anchors.flatMap((anchor) => {
+      if (diffEnd && anchor.pos >= (diffStart ?? 0) && anchor.pos < diffEnd.a) return [];
+      const shift =
+        diffEnd && anchor.pos >= Math.max(diffStart ?? 0, diffEnd.a)
+          ? diffEnd.b - diffEnd.a
+          : 0;
+      const pos = anchor.pos + shift;
+      if (pos < 0 || pos >= currentDoc.content.size) return [];
+      const expected = parsed.doc.nodeAt(anchor.pos);
+      const actual = currentDoc.nodeAt(pos);
+      return expected != null && actual != null && expected.eq(actual)
+        ? [{ ...anchor, pos, endPos: anchor.endPos + shift }]
+        : [];
+    });
+    const lines = this.markdown.split('\n');
+    const topLevel = anchors.filter((anchor) => anchor.depth === 0 && anchor.edge === 'start');
+    for (let index = 1; index < topLevel.length; index += 1) {
+      const previous = topLevel[index - 1];
+      const next = topLevel[index];
+      if (next.fromLine > previous.toLine + 1 &&
+          lines.slice(previous.toLine, next.fromLine - 1).every((line) => !line.trim())) {
+        anchors.push({ ...previous, key: `${previous.pos}:blank`, kind: 'blank', edge: 'end',
+          fromLine: previous.toLine + 1, toLine: next.fromLine - 1 });
+      }
+    }
+    const eofLine = lines.length + 1;
+    if (currentDoc.childCount > 0) {
+      const lastPos = currentDoc.content.size - currentDoc.lastChild!.nodeSize;
+      anchors.push({ key: 'eof', fromLine: eofLine, toLine: eofLine, pos: lastPos,
+        endPos: currentDoc.content.size, kind: 'eof', edge: 'end', depth: 0 });
+    }
+    this.syncSnapshot = {
+      revision: this.contentRevision,
+      renderRevision: this.syncRenderRevision,
+      ready: anchors.some((anchor) => anchor.kind !== 'eof') || Boolean(currentDoc.attrs.frontMatterPrefix),
+      markdown: this.markdown, anchors,
+    };
+    return this.syncSnapshot;
+  }
+
+  /** 返回浏览器视口坐标；调用方负责换算到所属滚动容器，不改文档或选区。 */
+  getScrollSyncAnchorRect(anchor: MarkdownSyncAnchor): { top: number; bottom: number } | null {
+    if (!this.view || anchor.pos < 0 || anchor.pos >= this.view.state.doc.content.size) return null;
+    const element = this.view.nodeDOM(anchor.pos);
+    if (!(element instanceof HTMLElement) || element.getClientRects().length === 0) return null;
+    const rect = element.getBoundingClientRect();
+    if (rect.height <= 0) return null;
+    if (anchor.edge === 'line') {
+      const content = element.querySelector<HTMLElement>('.code-content');
+      const code = content?.querySelector<HTMLElement>('code');
+      if (!content || !code || element.classList.contains('is-editing') ||
+          content.scrollHeight > content.clientHeight + 1 || content.scrollTop > 0) return null;
+      const style = getComputedStyle(code);
+      const scale = code.offsetHeight > 0 ? code.getBoundingClientRect().height / code.offsetHeight : 1;
+      const lineHeight = Number.parseFloat(style.lineHeight);
+      if (!Number.isFinite(lineHeight)) return null;
+      const top = code.getBoundingClientRect().top +
+        ((Number.parseFloat(style.paddingTop) || 0) + (anchor.lineOffset ?? 0) * lineHeight) * scale;
+      return { top, bottom: top + lineHeight * scale };
+    }
+    return rect;
+  }
+
+  getScrollSyncCaret(): EditorSyncCaret | null {
+    if (!this.view) return null;
+    const active = this.view.dom.ownerDocument.activeElement;
+    if (active instanceof HTMLTextAreaElement && this.view.dom.contains(active)) {
+      try {
+        return { head: this.view.posAtDOM(active, 0), blockOnly: true };
+      } catch {
+        return { head: this.view.state.selection.head, blockOnly: true };
+      }
+    }
+    const head = this.view.state.selection.head;
+    try {
+      return { head, viewportTop: this.view.coordsAtPos(head).top };
+    } catch {
+      return { head, blockOnly: true };
+    }
+  }
+
+  getBlockAlignmentGeometry(anchors: Array<{ key: string; nodeIndex: number }>) {
+    if (!this.view) return [];
+    const view = this.view;
+    return anchors
+      .filter((anchor) => anchor.nodeIndex >= 0 && anchor.nodeIndex < view.state.doc.childCount)
+      .map((anchor, index, validAnchors) => {
+        const top = this.getBlockTop(anchor.nodeIndex);
+        const nextAnchor = validAnchors[index + 1];
+        const nextTop = nextAnchor
+          ? this.getBlockTop(nextAnchor.nodeIndex)
+          : this.getBlockBottom(anchor.nodeIndex, anchor.key);
+        return {
+          key: anchor.key,
+          top,
+          nextTop: Math.max(top, nextTop),
+          existingGap: this.blockAlignmentGaps.get(anchor.key) ?? 0,
+        };
+      });
+  }
+
+  applyBlockAlignmentGaps(gaps: SemanticBlockAlignmentGap[]): void {
+    if (!this.view) return;
+    const view = this.view;
+    const scale = this.getBlockAlignmentScale();
+    const effectivePhysicalGaps = gaps.filter(
+      (gap) =>
+        gap.height > 0.05 && gap.nodeIndex >= 0 && gap.nodeIndex < view.state.doc.childCount - 1,
+    );
+    const effectiveGaps = effectivePhysicalGaps.map((gap) => ({
+      ...gap,
+      height: gap.height / scale,
+      marginCompensation: this.getBlockMarginCompensation(gap.nodeIndex),
+    }));
+    this.blockAlignmentGaps = new Map(effectivePhysicalGaps.map((gap) => [gap.key, gap.height]));
+    view.dispatch(setSemanticBlockAlignmentGaps(view.state.tr, effectiveGaps));
+  }
+
+  clearBlockAlignmentGaps(): void {
+    if (!this.view || this.blockAlignmentGaps.size === 0) return;
+    this.blockAlignmentGaps.clear();
+    this.view.dispatch(setSemanticBlockAlignmentGaps(this.view.state.tr, []));
+  }
+
+  private getBlockTop(nodeIndex: number) {
+    if (!this.view) return 0;
+    const dom = this.view.nodeDOM(this.getBlockPosition(nodeIndex));
+    return dom instanceof HTMLElement ? dom.getBoundingClientRect().top : 0;
+  }
+
+  private getBlockBottom(nodeIndex: number, key: string) {
+    if (!this.view) return 0;
+    const dom = this.view.nodeDOM(this.getBlockPosition(nodeIndex));
+    if (!(dom instanceof HTMLElement)) return this.getBlockTop(nodeIndex);
+    return dom.getBoundingClientRect().bottom + (this.blockAlignmentGaps.get(key) ?? 0);
+  }
+
+  private getBlockMarginCompensation(nodeIndex: number) {
+    if (!this.view || nodeIndex < 0 || nodeIndex >= this.view.state.doc.childCount - 1) return 0;
+    const currentDom = this.view.nodeDOM(this.getBlockPosition(nodeIndex));
+    const nextDom = this.view.nodeDOM(this.getBlockPosition(nodeIndex + 1));
+    if (!(currentDom instanceof HTMLElement) || !(nextDom instanceof HTMLElement)) return 0;
+
+    const currentMarginBottom = Math.max(
+      0,
+      Number.parseFloat(getComputedStyle(currentDom).marginBottom) || 0,
+    );
+    const nextMarginTop = Math.max(0, Number.parseFloat(getComputedStyle(nextDom).marginTop) || 0);
+    if (currentMarginBottom === 0 || nextMarginTop === 0) return 0;
+
+    return Math.min(currentMarginBottom, nextMarginTop);
+  }
+
+  private getBlockAlignmentScale() {
+    if (!this.view) return 1;
+    const host = this.view.dom.closest<HTMLElement>('.prosemirror-host') ?? this.view.dom;
+    const zoom = Number.parseFloat(getComputedStyle(host).zoom);
+    if (Number.isFinite(zoom) && zoom > 0) return zoom;
+    const rect = host.getBoundingClientRect();
+    return host.offsetWidth > 0 && rect.width > 0 ? rect.width / host.offsetWidth : 1;
+  }
+
+  private getBlockPosition(nodeIndex: number) {
+    if (!this.view) return 0;
+    let position = 0;
+    for (let index = 0; index < nodeIndex; index += 1) {
+      position += this.view.state.doc.child(index).nodeSize;
+    }
+    return position;
+  }
+
   flushMarkdown(): string {
     this.assertActive();
     this.flushPendingMarkdownSync();
     return this.markdown;
+  }
+
+  refreshSemanticView(): void {
+    this.assertActive();
+    this.flushPendingMarkdownSync();
+    if (!this.semanticViewDirty) {
+      return;
+    }
+    this.replaceViewState(this.markdown);
   }
 
   setDirty(dirty: boolean): void {
@@ -335,11 +544,13 @@ export class ProseMirrorEditorCore implements EditorCore {
     this.assertActive();
     this.flushPendingMarkdownSync();
     const previousMarkdown = this.markdown;
-    const delaySemanticSync = options?.sourceInput === true && this.runtime.mode === 'source';
+    const delaySemanticSync = options?.sourceInput === true;
     const previousDoc = delaySemanticSync
       ? null
       : (this.view?.state.doc ?? this.parseSemanticDocument(this.markdown).doc);
     this.markdown = updateTocBlocks(markdown);
+    this.contentRevision += 1;
+    this.syncSnapshot = null;
     this.version += 1;
 
     const savedMarkdown =
@@ -503,9 +714,7 @@ export class ProseMirrorEditorCore implements EditorCore {
 
     const text = input.text ?? '';
     if (options.mode === 'plain') {
-      return text
-        ? this.insertPlainClipboardText(text)
-        : { status: 'rejected', reason: 'no-text' };
+      return text ? this.insertPlainClipboardText(text) : { status: 'rejected', reason: 'no-text' };
     }
 
     const classification = text ? classifyClipboardMarkdown(text) : null;
@@ -534,9 +743,7 @@ export class ProseMirrorEditorCore implements EditorCore {
         : { status: 'rejected', reason: 'no-text' };
     }
 
-    return text
-      ? this.insertPlainClipboardText(text)
-      : { status: 'rejected', reason: 'no-text' };
+    return text ? this.insertPlainClipboardText(text) : { status: 'rejected', reason: 'no-text' };
   }
 
   private handleNativePaste(event: ClipboardEvent): boolean {
@@ -673,7 +880,9 @@ export class ProseMirrorEditorCore implements EditorCore {
     const node = this.view.state.doc.nodeAt(pos);
     if (!node) return false;
     try {
-      this.view.dispatch(this.view.state.tr.setSelection(NodeSelection.create(this.view.state.doc, pos)));
+      this.view.dispatch(
+        this.view.state.tr.setSelection(NodeSelection.create(this.view.state.doc, pos)),
+      );
       return true;
     } catch {
       return false;
@@ -685,9 +894,11 @@ export class ProseMirrorEditorCore implements EditorCore {
     if (!this.view || !this.isEditable()) return false;
     const pos = this.findContextNodePosition(target);
     if (pos === null) return false;
-    if (target.kind === 'code-block') return CodeBlockNodeView.enterEditAt(this.view, pos, 0, 'start');
+    if (target.kind === 'code-block')
+      return CodeBlockNodeView.enterEditAt(this.view, pos, 0, 'start');
     if (target.kind === 'math-block') return MathBlockNodeView.enterEditAt(this.view, pos, 'start');
-    if (target.kind === 'mermaid-block') return MermaidBlockNodeView.enterEditAt(this.view, pos, 'start');
+    if (target.kind === 'mermaid-block')
+      return MermaidBlockNodeView.enterEditAt(this.view, pos, 'start');
     return false;
   }
 
@@ -936,6 +1147,7 @@ export class ProseMirrorEditorCore implements EditorCore {
       selection: appended ? TextSelection.create(doc, doc.content.size - 1) : undefined,
       plugins: [
         windowsImePunctuationFallbackPlugin(),
+        blockAlignmentPlugin(),
         inputRules({
           rules: createMarkdownInputRules(),
         }),
@@ -1165,10 +1377,18 @@ export class ProseMirrorEditorCore implements EditorCore {
     }
 
     const previousDoc = this.view.state.doc;
+    const previousSelection = this.view.state.selection;
     const nextState = this.view.state.apply(transaction);
     this.view.updateState(nextState);
 
+    if (isSemanticBlockAlignmentTransaction(transaction)) {
+      return;
+    }
+
     if (transaction.docChanged) {
+      this.contentRevision += 1;
+      this.syncRenderRevision += 1;
+      this.syncSnapshot = null;
       this.pendingMarkdownDoc = nextState.doc;
       this.dirty = !nextState.doc.eq(this.originalDoc);
       this.scheduleMarkdownSync();
@@ -1178,6 +1398,28 @@ export class ProseMirrorEditorCore implements EditorCore {
     // 每次事务都递增版本并通知（pending mark 状态切换、选区变化等需要及时反映到 UI）
     this.version += 1;
     this.emit(transaction.docChanged ? 'content-pending' : 'transaction');
+    if (!nextState.selection.eq(previousSelection)) {
+      this.options.onSelectionChange?.(this.createSelectionEvent());
+    }
+  }
+
+  private createSelectionEvent(): EditorSelectionEvent {
+    if (!this.view || this.view.state.selection.empty) {
+      return { selection: null, selectedMarkdown: '', caret: this.getScrollSyncCaret() ?? undefined };
+    }
+
+    const { doc, selection } = this.view.state;
+    const clipboardDoc = removeEmptyTrailingParagraph(doc);
+    const selectionTo = Math.min(selection.to, clipboardDoc.content.size);
+    const selectedMarkdown =
+      serializeMarkdownSelection(clipboardDoc, selection.from, selectionTo) ??
+      serializeClipboardText(selection.content());
+
+    return {
+      selection: { anchor: selection.anchor, head: selection.head },
+      selectedMarkdown,
+      caret: this.getScrollSyncCaret() ?? undefined,
+    };
   }
 
   private scheduleMarkdownSync(): void {
@@ -1231,6 +1473,9 @@ export class ProseMirrorEditorCore implements EditorCore {
     }
 
     const nextState = this.createState(markdown);
+    this.syncRenderRevision += 1;
+    this.syncSnapshot = null;
+    this.blockAlignmentGaps.clear();
     this.view.updateState(selection ? this.restoreSelection(nextState, selection) : nextState);
     this.semanticViewDirty = false;
   }

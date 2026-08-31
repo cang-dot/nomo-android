@@ -20,6 +20,7 @@ import {
   isInterfaceLanguagePreference,
   type InterfaceLanguagePreference,
 } from '../i18n';
+import type { EditorViewMode, SplitViewLayout } from '../types';
 import {
   CLASSIC_DOCUMENT_STYLE_ID,
   DEFAULT_COLOR_THEME_ID,
@@ -29,11 +30,12 @@ import {
 } from './themeRegistry';
 
 export type { AppearancePreferences, ColorScheme, ThemeMode };
-export type EditorModePreference = 'semantic' | 'source';
-export type FolderOpenDefaultBehavior = 'current-window' | 'new-window' | 'ask-every-time';
+export type EditorModePreference = EditorViewMode;
+export type SplitViewLayoutPreference = SplitViewLayout;
+export type OpenDefaultBehavior = 'current-window' | 'new-window' | 'ask-every-time';
 export type CloseWindowBehavior = 'ask-every-time' | 'close-window' | 'close-to-tray';
 export type ExternalFileChangeBehavior = 'reload-external' | 'overwrite-external' | 'ignore';
-export type WritingStatsMetric = 'lines' | 'words' | 'chars';
+export type WritingStatsMetric = 'lines' | 'words' | 'visibleChars' | 'chars';
 export type ImageDefaultAlignPreference = ImageDefaultAlign;
 export type CodeBlockIndentPreference = 'spaces-2' | 'spaces-4' | 'tab';
 export type RenderModePreference = 'hardware' | 'software';
@@ -71,6 +73,8 @@ export interface AppPreferences {
   documentStyleId: string;
   interfaceLanguage: InterfaceLanguagePreference;
   editorMode: EditorModePreference;
+  splitViewLayout: SplitViewLayoutPreference;
+  splitLeftPercent: number;
   autoSaveEnabled: boolean;
   autoSaveDelayMs: number;
   createSnapshotBeforeSave: boolean;
@@ -78,7 +82,7 @@ export interface AppPreferences {
   lineHeight: number;
   contentWidthPercent: number;
   largeDocumentLimit: number;
-  folderOpenDefaultBehavior: FolderOpenDefaultBehavior;
+  openDefaultBehavior: OpenDefaultBehavior;
   filePreviewEnabled: boolean;
   closeWindowBehavior: CloseWindowBehavior;
   externalFileChangeBehavior: ExternalFileChangeBehavior;
@@ -150,6 +154,8 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   documentStyleId: DEFAULT_DOCUMENT_STYLE_ID,
   interfaceLanguage: DEFAULT_INTERFACE_LANGUAGE,
   editorMode: 'semantic',
+  splitViewLayout: 'semantic-source',
+  splitLeftPercent: 50,
   autoSaveEnabled: false,
   autoSaveDelayMs: 1000,
   createSnapshotBeforeSave: true,
@@ -157,7 +163,7 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   lineHeight: 1.75,
   contentWidthPercent: 60,
   largeDocumentLimit: 500_000,
-  folderOpenDefaultBehavior: 'ask-every-time',
+  openDefaultBehavior: 'ask-every-time',
   filePreviewEnabled: true,
   closeWindowBehavior: 'ask-every-time',
   externalFileChangeBehavior: 'reload-external',
@@ -260,6 +266,8 @@ export async function loadAppPreferences(
     ...appearance,
     interfaceLanguage: parseSetting<unknown>(settings, 'interfaceLanguage'),
     editorMode: parseSetting<unknown>(settings, 'editorMode'),
+    splitViewLayout: parseSetting<unknown>(settings, 'splitViewLayout'),
+    splitLeftPercent: parseSetting<unknown>(settings, 'splitLeftPercent'),
     autoSaveEnabled: parseSetting<unknown>(settings, 'autoSaveEnabled'),
     autoSaveDelayMs: parseSetting<unknown>(settings, 'autoSaveDelayMs'),
     createSnapshotBeforeSave: parseSetting<unknown>(settings, 'createSnapshotBeforeSave'),
@@ -267,7 +275,9 @@ export async function loadAppPreferences(
     lineHeight: parseSetting<unknown>(settings, 'lineHeight'),
     contentWidthPercent: parseSetting<unknown>(settings, 'contentWidthPercent'),
     largeDocumentLimit: parseSetting<unknown>(settings, 'largeDocumentLimit'),
-    folderOpenDefaultBehavior: parseSetting<unknown>(settings, 'folderOpenDefaultBehavior'),
+    openDefaultBehavior:
+      parseSetting<unknown>(settings, 'openDefaultBehavior') ??
+      parseSetting<unknown>(settings, 'folderOpenDefaultBehavior'),
     filePreviewEnabled: parseSetting<unknown>(settings, 'filePreviewEnabled'),
     closeWindowBehavior:
       parseSetting<unknown>(settings, 'closeWindowBehavior') ??
@@ -358,6 +368,15 @@ export function normalizeAppPreferences(
     editorMode: isEditorModePreference(value.editorMode)
       ? value.editorMode
       : DEFAULT_APP_PREFERENCES.editorMode,
+    splitViewLayout: isSplitViewLayoutPreference(value.splitViewLayout)
+      ? value.splitViewLayout
+      : DEFAULT_APP_PREFERENCES.splitViewLayout,
+    splitLeftPercent: clampNumber(
+      value.splitLeftPercent,
+      25,
+      75,
+      DEFAULT_APP_PREFERENCES.splitLeftPercent,
+    ),
     autoSaveEnabled:
       typeof value.autoSaveEnabled === 'boolean'
         ? value.autoSaveEnabled
@@ -386,9 +405,9 @@ export function normalizeAppPreferences(
       1_000_000,
       DEFAULT_APP_PREFERENCES.largeDocumentLimit,
     ),
-    folderOpenDefaultBehavior: isFolderOpenDefaultBehavior(value.folderOpenDefaultBehavior)
-      ? value.folderOpenDefaultBehavior
-      : DEFAULT_APP_PREFERENCES.folderOpenDefaultBehavior,
+    openDefaultBehavior: isOpenDefaultBehavior(value.openDefaultBehavior)
+      ? value.openDefaultBehavior
+      : DEFAULT_APP_PREFERENCES.openDefaultBehavior,
     filePreviewEnabled:
       typeof value.filePreviewEnabled === 'boolean'
         ? value.filePreviewEnabled
@@ -555,13 +574,17 @@ export function applyCodeBlockLineNumberSetting(visible: boolean) {
   document.documentElement.dataset.codeLineNumbers = visible ? 'visible' : 'hidden';
 }
 
-function toPersistedPreferenceEntries(preferences: AppPreferences) {
+function toPersistedPreferenceEntries(
+  preferences: AppPreferences,
+): Record<AppPreferenceKey, unknown> {
   return {
     themeMode: preferences.themeMode,
     colorThemeId: preferences.colorThemeId,
     documentStyleId: preferences.documentStyleId,
     interfaceLanguage: preferences.interfaceLanguage,
     editorMode: preferences.editorMode,
+    splitViewLayout: preferences.splitViewLayout,
+    splitLeftPercent: preferences.splitLeftPercent,
     autoSaveEnabled: preferences.autoSaveEnabled,
     autoSaveDelayMs: preferences.autoSaveDelayMs,
     createSnapshotBeforeSave: preferences.createSnapshotBeforeSave,
@@ -569,7 +592,7 @@ function toPersistedPreferenceEntries(preferences: AppPreferences) {
     lineHeight: preferences.lineHeight,
     contentWidthPercent: preferences.contentWidthPercent,
     largeDocumentLimit: preferences.largeDocumentLimit,
-    folderOpenDefaultBehavior: preferences.folderOpenDefaultBehavior,
+    openDefaultBehavior: preferences.openDefaultBehavior,
     filePreviewEnabled: preferences.filePreviewEnabled,
     closeWindowBehavior: preferences.closeWindowBehavior,
     externalFileChangeBehavior: preferences.externalFileChangeBehavior,
@@ -594,6 +617,7 @@ function toPersistedPreferenceEntries(preferences: AppPreferences) {
     shortcutPreferences: preferences.shortcutPreferences,
     imageHandlingSettings: preferences.imageHandlingSettings,
     developerMode: preferences.developerMode,
+    softwareUpdateAutoCheckEnabled: preferences.softwareUpdateAutoCheckEnabled,
   };
 }
 
@@ -844,10 +868,14 @@ function isThemeMode(value: unknown): value is ThemeMode {
 }
 
 function isEditorModePreference(value: unknown): value is EditorModePreference {
-  return value === 'semantic' || value === 'source';
+  return value === 'semantic' || value === 'source' || value === 'split';
 }
 
-function isFolderOpenDefaultBehavior(value: unknown): value is FolderOpenDefaultBehavior {
+function isSplitViewLayoutPreference(value: unknown): value is SplitViewLayoutPreference {
+  return value === 'semantic-source' || value === 'source-semantic';
+}
+
+function isOpenDefaultBehavior(value: unknown): value is OpenDefaultBehavior {
   return value === 'current-window' || value === 'new-window' || value === 'ask-every-time';
 }
 
@@ -876,7 +904,9 @@ function resolveLegacyCloseWindowBehavior(
 }
 
 function isWritingStatsMetric(value: unknown): value is WritingStatsMetric {
-  return value === 'lines' || value === 'words' || value === 'chars';
+  return (
+    value === 'lines' || value === 'words' || value === 'visibleChars' || value === 'chars'
+  );
 }
 
 function isDiagramTypePreference(value: unknown): value is DiagramType {

@@ -11,7 +11,7 @@
   import { pulseOnChange } from '../actions/motion';
   import { t, type EffectiveInterfaceLocale } from '../i18n';
 
-  type StatsMetric = 'lines' | 'words' | 'chars';
+  type StatsMetric = 'lines' | 'words' | 'visibleChars' | 'chars';
 
   export let interfaceLocale: EffectiveInterfaceLocale;
   export let stats: DocumentStats;
@@ -35,6 +35,12 @@
   $: statsOptions = [
     { key: 'lines' as const, label: t.lines(), value: stats.lines, unit: t.lineUnit() },
     { key: 'words' as const, label: t.words(), value: stats.words, unit: t.wordUnit() },
+    {
+      key: 'visibleChars' as const,
+      label: t.visibleChars(),
+      value: stats.visibleChars,
+      unit: t.visibleCharUnit(),
+    },
     { key: 'chars' as const, label: t.chars(), value: stats.chars, unit: t.charUnit() },
   ];
   $: activeStatsOption =

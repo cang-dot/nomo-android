@@ -8,6 +8,7 @@
     ChevronUp,
     Code2,
     CodeXml,
+    Columns2,
     Heading1,
     Highlighter,
     Italic,
@@ -18,6 +19,7 @@
     MessageSquare,
     Info,
     Quote,
+    ScanLine,
     Search,
     Sigma,
     Strikethrough,
@@ -31,15 +33,16 @@
     DIAGRAM_TEMPLATES,
     type DiagramType,
     type EditorCommand,
-    type EditorMode,
     type InlinePendingMarks,
   } from '../../lib/editor-core';
+  import type { EditorViewMode } from '../types';
   import { clickOutside } from '../actions/clickOutside';
   import { modeSwitchIndicator } from '../actions/motion';
   import { getDiagramTypeLabel, t } from '../i18n';
 
   export let interfaceLocale: string;
-  export let mode: EditorMode;
+  export let mode: EditorViewMode;
+  export let largeDocumentMode = false;
   export let contentWidthPercent: number;
   export let outlineVisible: boolean;
   export let toolbarShortcut: string;
@@ -51,7 +54,9 @@
   export let openLinkPicker: () => void;
   export let insertTableWithSize: (rows: number, columns: number) => void;
   export let updateContentWidth: (event: Event) => void;
-  export let setMode: (mode: EditorMode) => void;
+  export let setMode: (mode: EditorViewMode) => void;
+  export let splitAlignmentGuideVisible = false;
+  export let toggleSplitAlignmentGuide: () => void = () => undefined;
   export let toggleOutlineVisible: () => void;
   export let toggleToolbar: () => void;
   export let inactive = false;
@@ -484,7 +489,10 @@
       >
         <Search size={18} />
       </button>
-      <label class="range-control width-control width-control-expanded" title={t.contentWidth()}>
+      <label
+        class="range-control width-control width-control-expanded"
+        title={mode === 'split' ? t.splitAdaptiveWidth() : t.contentWidth()}
+      >
         <AlignHorizontalSpaceAround size={16} aria-hidden="true" />
         <span>{contentWidthPercent}%</span>
         <input
@@ -493,6 +501,7 @@
           max="90"
           step="1"
           value={contentWidthPercent}
+          disabled={mode === 'split'}
           on:input={updateContentWidth}
         />
       </label>
@@ -501,8 +510,9 @@
           class="width-control-compact"
           class:active={widthPickerOpen}
           type="button"
-          title={t.contentWidth()}
-          aria-label={t.contentWidth()}
+          title={mode === 'split' ? t.splitAdaptiveWidth() : t.contentWidth()}
+          aria-label={mode === 'split' ? t.splitAdaptiveWidth() : t.contentWidth()}
+          disabled={mode === 'split'}
           aria-haspopup="dialog"
           aria-expanded={widthPickerOpen}
           on:click|stopPropagation={toggleWidthPicker}
@@ -521,6 +531,7 @@
               max="90"
               step="1"
               value={contentWidthPercent}
+              disabled={mode === 'split'}
               aria-label={t.contentWidth()}
               on:input={updateContentWidth}
               on:keydown={handleWidthPickerKeydown}
@@ -530,10 +541,13 @@
       </div>
       <div class="mode-switch" aria-label={t.mode()} use:modeSwitchIndicator={{ mode }}>
         <button
-          title={t.semanticEditingTitle()}
+          title={largeDocumentMode
+            ? t.largeDocumentStayReadonlySource()
+            : t.semanticEditingTitle()}
           aria-label={t.semanticEditing()}
           aria-pressed={mode === 'semantic'}
           class:active={mode === 'semantic'}
+          disabled={largeDocumentMode}
           on:click={() => setMode('semantic')}
         >
           <BookOpenText size={17} />
@@ -547,7 +561,29 @@
         >
           <CodeXml size={17} />
         </button>
+        <button
+          title={largeDocumentMode ? t.largeDocumentStayReadonlySource() : t.splitMode()}
+          aria-label={t.splitMode()}
+          aria-pressed={mode === 'split'}
+          class:active={mode === 'split'}
+          disabled={largeDocumentMode}
+          on:click={() => setMode('split')}
+        >
+          <Columns2 size={17} />
+        </button>
       </div>
+      {#if mode === 'split' && !largeDocumentMode}
+        <button
+          class="icon-button"
+          class:active={splitAlignmentGuideVisible}
+          title={t.toggleSplitAlignmentGuide()}
+          aria-label={t.toggleSplitAlignmentGuide()}
+          aria-pressed={splitAlignmentGuideVisible}
+          on:click={toggleSplitAlignmentGuide}
+        >
+          <ScanLine size={18} />
+        </button>
+      {/if}
       <button
         class="icon-button"
         class:active={outlineVisible}

@@ -13,7 +13,7 @@
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { DIAGRAM_TEMPLATES } from '../../lib/editor-core/diagramTemplates';
-  import { isTauriRuntime } from '../../lib/desktop/tauriStorage';
+  import { isTauriRuntime, openExternalLink } from '../../lib/desktop/tauriStorage';
   import {
     type DownloadedSoftwareUpdate,
     type SoftwareUpdateCandidate,
@@ -36,10 +36,11 @@
     type CodeBlockIndentPreference,
     type EditorModePreference,
     type ExternalFileChangeBehavior,
-    type FolderOpenDefaultBehavior,
+    type OpenDefaultBehavior,
     type InterfaceLanguagePreference,
     type MarkdownLintRuleSet,
     type RenderModePreference,
+    type SplitViewLayoutPreference,
     type ShortcutCommandId,
     type WritingStatsMetric,
   } from '../services/settings';
@@ -84,6 +85,9 @@
   import WindowsCaptionControls from './WindowsCaptionControls.svelte';
   import nomoLogoDark from '../../../src-tauri/icons/nomo/source/nomo-app-dark-128.png?url';
   import nomoLogoLight from '../../../src-tauri/icons/nomo/source/nomo-app-light-128.png?url';
+
+  const GITHUB_REPOSITORY_URL = 'https://github.com/nomo-md/nomo';
+  const GITHUB_ISSUE_URL = 'https://github.com/nomo-md/nomo/issues/new/choose';
 
   type CategoryId =
     | 'general'
@@ -592,6 +596,19 @@
     }, 1800);
   }
 
+  async function openProjectLink(href: string) {
+    logToTerminal('info', 'SettingsWindow', '打开项目外部链接', { href });
+    try {
+      await openExternalLink(href);
+    } catch (error) {
+      logToTerminal('error', 'SettingsWindow', '打开项目外部链接失败', {
+        href,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      showStatus(t.externalLinkOpenFailed());
+    }
+  }
+
   let pendingUpdateCandidate: SoftwareUpdateCandidate | null = null;
 
   async function checkForSoftwareUpdate() {
@@ -951,12 +968,16 @@
     updateDraft({ editorMode });
   }
 
+  function setSplitViewLayout(splitViewLayout: SplitViewLayoutPreference) {
+    updateDraft({ splitViewLayout });
+  }
+
   function setDocumentStyle(documentStyleId: string) {
     updateDraft({ documentStyleId });
   }
 
-  function setFolderBehavior(folderOpenDefaultBehavior: FolderOpenDefaultBehavior) {
-    updateDraft({ folderOpenDefaultBehavior });
+  function setOpenBehavior(openDefaultBehavior: OpenDefaultBehavior) {
+    updateDraft({ openDefaultBehavior });
   }
 
   function setCloseWindowBehavior(closeWindowBehavior: CloseWindowBehavior) {
@@ -1546,7 +1567,7 @@
                   <span class="setting-label">{t.editorModeDefault()}</span>
                   <p>{t.editorModeDefaultDescription()}</p>
                 </div>
-                <div class="segmented-control" role="group" aria-label={t.editorModeDefault()}>
+                <div class="triple-control" role="group" aria-label={t.editorModeDefault()}>
                   <button
                     type="button"
                     class:active={draftSettings.editorMode === 'semantic'}
@@ -1558,6 +1579,35 @@
                     class:active={draftSettings.editorMode === 'source'}
                     aria-pressed={draftSettings.editorMode === 'source'}
                     on:click={() => setEditorMode('source')}>{t.sourceMode()}</button
+                  >
+                  <button
+                    type="button"
+                    class:active={draftSettings.editorMode === 'split'}
+                    aria-pressed={draftSettings.editorMode === 'split'}
+                    on:click={() => setEditorMode('split')}>{t.splitMode()}</button
+                  >
+                </div>
+              </div>
+
+              <div class="setting-row">
+                <div>
+                  <span class="setting-label">{t.splitViewLayout()}</span>
+                  <p>{t.splitViewLayoutDescription()}</p>
+                </div>
+                <div class="segmented-control" role="group" aria-label={t.splitViewLayout()}>
+                  <button
+                    type="button"
+                    class:active={draftSettings.splitViewLayout === 'semantic-source'}
+                    aria-pressed={draftSettings.splitViewLayout === 'semantic-source'}
+                    on:click={() => setSplitViewLayout('semantic-source')}
+                    >{t.semanticOnLeft()}</button
+                  >
+                  <button
+                    type="button"
+                    class:active={draftSettings.splitViewLayout === 'source-semantic'}
+                    aria-pressed={draftSettings.splitViewLayout === 'source-semantic'}
+                    on:click={() => setSplitViewLayout('source-semantic')}
+                    >{t.sourceOnLeft()}</button
                   >
                 </div>
               </div>
@@ -1947,21 +1997,21 @@
                 <div class="triple-control" role="group" aria-label={t.folderOpenDefaultBehavior()} class:hidden-mobile={isMobileRuntime}>
                   <button
                     type="button"
-                    class:active={draftSettings.folderOpenDefaultBehavior === 'ask-every-time'}
-                    aria-pressed={draftSettings.folderOpenDefaultBehavior === 'ask-every-time'}
-                    on:click={() => setFolderBehavior('ask-every-time')}>{t.askEveryTime()}</button
+                    class:active={draftSettings.openDefaultBehavior === 'ask-every-time'}
+                    aria-pressed={draftSettings.openDefaultBehavior === 'ask-every-time'}
+                    on:click={() => setOpenBehavior('ask-every-time')}>{t.askEveryTime()}</button
                   >
                   <button
                     type="button"
-                    class:active={draftSettings.folderOpenDefaultBehavior === 'current-window'}
-                    aria-pressed={draftSettings.folderOpenDefaultBehavior === 'current-window'}
-                    on:click={() => setFolderBehavior('current-window')}>{t.currentWindow()}</button
+                    class:active={draftSettings.openDefaultBehavior === 'current-window'}
+                    aria-pressed={draftSettings.openDefaultBehavior === 'current-window'}
+                    on:click={() => setOpenBehavior('current-window')}>{t.currentWindow()}</button
                   >
                   <button
                     type="button"
-                    class:active={draftSettings.folderOpenDefaultBehavior === 'new-window'}
-                    aria-pressed={draftSettings.folderOpenDefaultBehavior === 'new-window'}
-                    on:click={() => setFolderBehavior('new-window')}>{t.newWindow()}</button
+                    class:active={draftSettings.openDefaultBehavior === 'new-window'}
+                    aria-pressed={draftSettings.openDefaultBehavior === 'new-window'}
+                    on:click={() => setOpenBehavior('new-window')}>{t.newWindow()}</button
                   >
                 </div>
               </div>
@@ -2358,7 +2408,7 @@
                   <span class="setting-label">{t.defaultStatsMetric()}</span>
                   <p>{t.defaultStatsMetricDescription()}</p>
                 </div>
-                <div class="triple-control" role="group" aria-label={t.defaultStatsMetric()}>
+                <div class="quad-control" role="group" aria-label={t.defaultStatsMetric()}>
                   <button
                     type="button"
                     class:active={draftSettings.writingStatsMetric === 'lines'}
@@ -2370,6 +2420,12 @@
                     class:active={draftSettings.writingStatsMetric === 'words'}
                     aria-pressed={draftSettings.writingStatsMetric === 'words'}
                     on:click={() => setStatsMetric('words')}>{t.words()}</button
+                  >
+                  <button
+                    type="button"
+                    class:active={draftSettings.writingStatsMetric === 'visibleChars'}
+                    aria-pressed={draftSettings.writingStatsMetric === 'visibleChars'}
+                    on:click={() => setStatsMetric('visibleChars')}>{t.visibleChars()}</button
                   >
                   <button
                     type="button"
@@ -2528,16 +2584,22 @@
             </div>
           {:else if activeCategory === 'about'}
             <div class="settings-group about-group">
-              <h2>Nomo</h2>
-              <div class="about-mark" aria-label="Nomo">
-                <img class="logo-light" src={nomoLogoLight} alt="" draggable="false" />
-                <img class="logo-dark" src={nomoLogoDark} alt="" draggable="false" />
+              <div class="about-identity">
+                <div class="about-mark" aria-hidden="true">
+                  <img class="logo-light" src={nomoLogoLight} alt="" draggable="false" />
+                  <img class="logo-dark" src={nomoLogoDark} alt="" draggable="false" />
+                </div>
+                <div class="about-identity-copy">
+                  <h2>Nomo</h2>
+                  <span
+                    class="about-version-badge"
+                    aria-label={`${t.version()} ${packageInfo.version}`}
+                  >
+                    v{packageInfo.version}
+                  </span>
+                </div>
               </div>
               <dl>
-                <div>
-                  <dt>{t.version()}</dt>
-                  <dd>{packageInfo.version}</dd>
-                </div>
                 <div>
                   <dt>{t.positioning()}</dt>
                   <dd>{t.positioningDescription()}</dd>
@@ -2547,6 +2609,64 @@
                   <dd>{t.platformStrategyDescription()}</dd>
                 </div>
               </dl>
+
+              <div class="project-link-grid">
+                <button
+                  type="button"
+                  class="project-link-card"
+                  on:click={() => void openProjectLink(GITHUB_REPOSITORY_URL)}
+                >
+                  <span class="project-link-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path
+                        d="M10.226 17.284c-2.965-.36-5.054-2.493-5.054-5.256 0-1.123.404-2.336 1.078-3.144-.292-.741-.247-2.314.09-2.965.898-.112 2.111.36 2.83 1.01.853-.269 1.752-.404 2.853-.404 1.1 0 1.999.135 2.807.382.696-.629 1.932-1.1 2.83-.988.315.606.36 2.179.067 2.942.72.854 1.101 2 1.101 3.167 0 2.763-2.089 4.852-5.098 5.234.763.494 1.28 1.572 1.28 2.807v2.336c0 .674.561 1.056 1.235.786 4.066-1.55 7.255-5.615 7.255-10.646C23.5 6.188 18.334 1 11.978 1 5.62 1 .5 6.188.5 12.545c0 4.986 3.167 9.12 7.435 10.669.606.225 1.19-.18 1.19-.786V20.63a2.9 2.9 0 0 1-1.078.224c-1.483 0-2.359-.808-2.987-2.313-.247-.607-.517-.966-1.034-1.033-.27-.023-.359-.135-.359-.27 0-.27.45-.471.898-.471.652 0 1.213.404 1.797 1.235.45.651.921.943 1.483.943.561 0 .92-.202 1.437-.719.382-.381.674-.718.944-.943"
+                      />
+                    </svg>
+                  </span>
+                  <span class="project-link-copy">
+                    <span class="project-link-title">{t.githubRepository()}</span>
+                    <span class="project-link-description">{t.githubRepositoryDescription()}</span>
+                  </span>
+                  <svg
+                    class="project-link-external"
+                    viewBox="0 0 16 16"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <path
+                      d="M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.854-1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1Z"
+                    />
+                  </svg>
+                </button>
+
+                <button
+                  type="button"
+                  class="project-link-card"
+                  on:click={() => void openProjectLink(GITHUB_ISSUE_URL)}
+                >
+                  <span class="project-link-icon issue" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path
+                        d="M12 1c6.075 0 11 4.925 11 11s-4.925 11-11 11S1 18.075 1 12 5.925 1 12 1ZM2.5 12a9.5 9.5 0 0 0 9.5 9.5 9.5 9.5 0 0 0 9.5-9.5A9.5 9.5 0 0 0 12 2.5 9.5 9.5 0 0 0 2.5 12Zm9.5 2a2 2 0 1 1-.001-3.999A2 2 0 0 1 12 14Z"
+                      />
+                    </svg>
+                  </span>
+                  <span class="project-link-copy">
+                    <span class="project-link-title">{t.reportIssue()}</span>
+                    <span class="project-link-description">{t.reportIssueDescription()}</span>
+                  </span>
+                  <svg
+                    class="project-link-external"
+                    viewBox="0 0 16 16"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <path
+                      d="M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.854-1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1Z"
+                    />
+                  </svg>
+                </button>
+              </div>
 
               <label class="toggle-row" for="softwareUpdateAutoCheckEnabled">
                 <span>
@@ -3278,17 +3398,53 @@
     max-width: 640px;
   }
 
+  .about-identity {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin: 0 0 14px;
+  }
+
   .about-mark {
     width: 54px;
     height: 54px;
+    flex: 0 0 auto;
     position: relative;
     display: inline-grid;
     place-items: center;
-    margin: 2px 0 16px;
     border-radius: var(--md-editor-radius-md);
     overflow: hidden;
     background: color-mix(in srgb, var(--md-editor-surface) 88%, var(--md-editor-accent));
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--md-editor-border) 72%, transparent);
+  }
+
+  .about-identity-copy {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .about-identity h2 {
+    padding: 0;
+    font-size: 18px;
+    line-height: 1.2;
+  }
+
+  .about-version-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 20px;
+    padding: 1px 7px;
+    border: 1px solid color-mix(in srgb, var(--md-editor-accent) 34%, var(--md-editor-border));
+    border-radius: 999px;
+    color: var(--md-editor-accent);
+    background: color-mix(in srgb, var(--md-editor-accent) 7%, var(--md-editor-surface));
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
   }
 
   .about-group dl {
@@ -3299,8 +3455,8 @@
 
   .about-group dl > div {
     display: grid;
-    grid-template-columns: 92px minmax(0, 1fr);
-    gap: 18px;
+    grid-template-columns: minmax(68px, max-content) minmax(0, 1fr);
+    gap: 12px;
     padding: 13px 0;
     border-top: 1px solid color-mix(in srgb, var(--md-editor-border) 72%, transparent);
   }
@@ -3316,6 +3472,91 @@
     color: var(--md-editor-fg);
     font-size: var(--md-editor-ui-font-size);
     line-height: 1.55;
+  }
+
+  .project-link-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin: 16px 0 8px;
+  }
+
+  .project-link-card {
+    min-width: 0;
+    min-height: 76px;
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr) 16px;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--md-editor-border);
+    border-radius: var(--md-editor-radius-md);
+    background: color-mix(in srgb, var(--md-editor-surface) 88%, var(--md-editor-bg));
+    color: var(--md-editor-fg);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      border-color 160ms ease,
+      background-color 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .project-link-card:hover {
+    border-color: color-mix(in srgb, var(--md-editor-accent) 48%, var(--md-editor-border));
+    background: color-mix(in srgb, var(--md-editor-accent) 7%, var(--md-editor-surface));
+  }
+
+  .project-link-card:active {
+    background: color-mix(in srgb, var(--md-editor-accent) 12%, var(--md-editor-surface));
+  }
+
+  .project-link-icon {
+    width: 36px;
+    height: 36px;
+    display: inline-grid;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--md-editor-border) 72%, transparent);
+    border-radius: 50%;
+    background: var(--md-editor-bg);
+    color: var(--md-editor-fg);
+  }
+
+  .project-link-icon.issue {
+    color: var(--md-editor-success);
+  }
+
+  .project-link-icon svg {
+    width: 24px;
+    height: 24px;
+    fill: currentColor;
+  }
+
+  .project-link-copy {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .project-link-title {
+    color: var(--md-editor-fg);
+    font-size: var(--md-editor-ui-font-size);
+    font-weight: 700;
+    line-height: 1.3;
+  }
+
+  .project-link-description {
+    color: var(--md-editor-muted-fg);
+    font-size: var(--md-editor-ui-font-size-sm);
+    line-height: 1.4;
+  }
+
+  .project-link-external {
+    width: 16px;
+    height: 16px;
+    align-self: start;
+    color: var(--md-editor-muted-fg);
+    fill: currentColor;
   }
 
   button:focus-visible,
@@ -3362,6 +3603,10 @@
   }
 
   @media (max-width: 520px) {
+    .project-link-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .theme-card-grid {
       grid-template-columns: minmax(0, 1fr);
     }

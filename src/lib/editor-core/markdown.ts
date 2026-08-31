@@ -7,7 +7,7 @@ import {
   MarkdownParser,
   MarkdownSerializer,
 } from 'prosemirror-markdown';
-import { Fragment, type Node as ProseMirrorNode } from 'prosemirror-model';
+import { Fragment, type Node as ProseMirrorNode, type ResolvedPos } from 'prosemirror-model';
 import { schema, type TableColumnAlignment } from './schema';
 import { classifyHtmlBlock } from './html/htmlClassifier';
 import { parseHtmlContent } from './html/htmlToPmLogic';
@@ -22,6 +22,7 @@ import { transformCalloutTokens, calloutParserTokens } from './callout/calloutPa
 import { serializeCallout } from './callout/calloutSerializer';
 import { TOC_END_MARKER, TOC_START_MARKER } from '../toc/tocService';
 import { splitFrontMatterBlock } from '../markdown/frontMatter';
+import { parseWithSyncAnchors, type MarkdownSyncAnchor } from './scrollSyncMapping';
 
 const markdownIt = MarkdownIt('commonmark', { html: true }).enable(['table', 'strikethrough']);
 markdownIt.validateLink = (url: string) => normalizeLinkHref(url) !== null;
@@ -685,25 +686,67 @@ const tableMarkdownSerializer = new MarkdownSerializer(
  *   - <p align="left|center|right"><img ...></p>  → ![alt](src){align=X width=Y}
  *   - 独立一行的 <img src="..." ...>             → ![alt](src){width=Y}
  */
-function preprocessImageHtml(markdown: string): string {
+interface MarkdownLineProvenance {
+  fromLine: number;
+  toLine: number;
+}
+
+interface PreprocessedImageHtml {
+  markdown: string;
+  lineProvenance: MarkdownLineProvenance[];
+}
+
+/**
+ * 图片 HTML 可能把多行源码折叠成一行 Markdown。解析器需要折叠后的文本，
+ * 但块对齐必须继续使用原始源码行号，因此同时记录每一行的来源范围。
+ */
+function preprocessImageHtmlWithProvenance(markdown: string): PreprocessedImageHtml {
+  const collapsedRanges: Array<MarkdownLineProvenance & { transformedLine: number }> = [];
+  let removedLineCount = 0;
+
   // 步骤1：<p align="..."><img ...></p>（单行或多行）
   let result = markdown.replace(
     /<p\s+align="(left|center|right)"\s*>\s*(<img\s+[^>]+(?:\/>|>))\s*<\/p>/gi,
-    (_full, align: string, imgTag: string) => {
+    (_full: string, align: string, imgTag: string, offset: number) => {
       const cleaned = imgTag.replace(/\/>$/, '').replace(/>$/, '').trim();
       const attrs = parseHtmlImgAttrs(cleaned);
       if (!attrs.src) return _full;
       const parts: string[] = [`align=${align.toLowerCase()}`];
       if (attrs.width) parts.push(`width=${attrs.width}`);
       const titleStr = attrs.title ? ` "${attrs.title}"` : '';
-      return `![${attrs.alt || ''}](${attrs.src}${titleStr}){${parts.join(' ')}}`;
+      const replacement = `![${attrs.alt || ''}](${attrs.src}${titleStr}){${parts.join(' ')}}`;
+      const originalFromLine = getLineNumberAtOffset(markdown, offset);
+      const originalToLine = getLineNumberAtOffset(markdown, offset + _full.length - 1);
+      collapsedRanges.push({
+        transformedLine: originalFromLine - removedLineCount,
+        fromLine: originalFromLine,
+        toLine: originalToLine,
+      });
+      removedLineCount += originalToLine - originalFromLine;
+      return replacement;
     },
   );
 
-  // 步骤2：独立一行的 <img src="..." ...>（不跟在 <p> 里）
+  const wrappedProvenance = Array.from(
+    { length: countMarkdownLines(result) },
+    (_value, index): MarkdownLineProvenance => {
+      const transformedLine = index + 1;
+      const collapsedRange = collapsedRanges.find((range) => range.transformedLine === transformedLine);
+      if (collapsedRange) return { fromLine: collapsedRange.fromLine, toLine: collapsedRange.toLine };
+      const removedBeforeLine = collapsedRanges.reduce(
+        (total, range) => range.transformedLine < transformedLine ? total + range.toLine - range.fromLine : total, 0,
+      );
+      const originalLine = transformedLine + removedBeforeLine;
+      return { fromLine: originalLine, toLine: originalLine };
+    },
+  );
+  const wrappedMarkdown = result;
+  const standaloneRanges: Array<{ line: number; from: number; to: number }> = [];
+  let standaloneRemoved = 0;
+  // 步骤2：保留原有图片转换行为，同时记录被空白匹配吞并的行。
   result = result.replace(
     /^<img\s+[^>]+(?:\/>|>)\s*$/gim,
-    (imgTag: string) => {
+    (imgTag: string, offset: number) => {
       const cleaned = imgTag.replace(/\/>$/, '').replace(/>$/, '').trim();
       if (/<[^>]+<[^>]+>/.test(cleaned)) return imgTag; // 含嵌套标签，不处理
       const attrs = parseHtmlImgAttrs(cleaned);
@@ -712,11 +755,49 @@ function preprocessImageHtml(markdown: string): string {
       if (attrs.width) parts.push(`width=${attrs.width}`);
       const titleStr = attrs.title ? ` "${attrs.title}"` : '';
       const attrsStr = parts.length > 0 ? `{${parts.join(' ')}}` : '';
+      const from = getLineNumberAtOffset(wrappedMarkdown, offset);
+      const to = getLineNumberAtOffset(wrappedMarkdown, offset + imgTag.length);
+      standaloneRanges.push({ line: from - standaloneRemoved, from, to });
+      standaloneRemoved += to - from;
       return `![${attrs.alt || ''}](${attrs.src}${titleStr})${attrsStr}`;
     },
   );
 
-  return result;
+  let removedBeforeLine = 0;
+  let rangeIndex = 0;
+  const lineProvenance = Array.from(
+    { length: countMarkdownLines(result) },
+    (_value, index): MarkdownLineProvenance => {
+      const transformedLine = index + 1;
+      const range = standaloneRanges[rangeIndex];
+      if (range?.line === transformedLine) {
+        rangeIndex += 1;
+        removedBeforeLine += range.to - range.from;
+        return { fromLine: wrappedProvenance[range.from - 1].fromLine,
+          toLine: wrappedProvenance[range.to - 1].toLine };
+      }
+      return wrappedProvenance[index + removedBeforeLine];
+    },
+  );
+
+  return { markdown: result, lineProvenance };
+}
+
+function preprocessImageHtml(markdown: string): string {
+  return preprocessImageHtmlWithProvenance(markdown).markdown;
+}
+
+function getLineNumberAtOffset(value: string, offset: number): number {
+  let line = 1;
+  const end = Math.max(0, Math.min(offset, value.length));
+  for (let index = 0; index < end; index += 1) {
+    if (value.charCodeAt(index) === 10) line += 1;
+  }
+  return line;
+}
+
+function countMarkdownLines(value: string): number {
+  return value.split(/\r?\n/).length;
 }
 
 function hasFollowingInlineContent(parent: ProseMirrorNode, index: number): boolean {
@@ -749,6 +830,30 @@ export interface MarkdownBlockLineMap {
   nodeIndex: number;
 }
 
+/** 返回与实际解析节点绑定的嵌套来源映射；解析失败时不提供猜测锚点。 */
+export function parseMarkdownWithSyncAnchors(markdown: string): {
+  doc: ProseMirrorNode;
+  anchors: MarkdownSyncAnchor[];
+} {
+  resetHtmlInlineStack();
+  const { frontMatterPrefix, body } = splitMarkdownDocument(markdown);
+  const preprocessed = preprocessImageHtmlWithProvenance(body);
+  const bodyOffset = markdown.length - body.length;
+  const lineOffset = markdown.slice(0, bodyOffset).split('\n').length - 1;
+  try {
+    const result = parseWithSyncAnchors(tableMarkdownParser, preprocessed.markdown, (line, end) => {
+      const provenance = preprocessed.lineProvenance[line];
+      return provenance ? (end ? provenance.toLine : provenance.fromLine) + lineOffset : undefined;
+    });
+    return {
+      doc: result.doc.type.create({ ...result.doc.attrs, frontMatterPrefix }, result.doc.content, result.doc.marks),
+      anchors: result.anchors,
+    };
+  } catch {
+    return { doc: parseMarkdown(markdown), anchors: [] };
+  }
+}
+
 /**
  * 使用与语义编辑器相同的 markdown-it 配置建立源码行到顶层文档块的临时映射。
  * 该映射只用于导航，不参与文档解析或持久化。
@@ -758,15 +863,23 @@ export function getMarkdownBlockLineMap(markdown: string): MarkdownBlockLineMap[
   const bodyOffset = body ? markdown.indexOf(body, frontMatter.length) : markdown.length;
   const bodyStartLineOffset =
     (bodyOffset >= 0 ? markdown.slice(0, bodyOffset) : '').split('\n').length - 1;
-  const tokens = markdownIt.parse(preprocessImageHtml(body), {});
+  const preprocessed = preprocessImageHtmlWithProvenance(body);
+  const tokens = markdownIt.parse(preprocessed.markdown, {});
 
   return tokens
     .filter((token) => token.level === 0 && token.nesting >= 0 && token.map)
-    .map((token, nodeIndex) => ({
-      fromLine: token.map![0] + bodyStartLineOffset + 1,
-      toLine: token.map![1] + bodyStartLineOffset,
-      nodeIndex,
-    }));
+    .map((token, nodeIndex): MarkdownBlockLineMap | null => {
+      const [fromLineIndex, toLineIndex] = token.map!;
+      const fromProvenance = preprocessed.lineProvenance[fromLineIndex];
+      const toProvenance = preprocessed.lineProvenance[toLineIndex - 1];
+      if (!fromProvenance || !toProvenance) return null;
+      return {
+        fromLine: fromProvenance.fromLine + bodyStartLineOffset,
+        toLine: toProvenance.toLine + bodyStartLineOffset,
+        nodeIndex,
+      };
+    })
+    .filter((mapping): mapping is MarkdownBlockLineMap => mapping !== null);
 }
 
 export function serializeMarkdown(doc: ProseMirrorNode): string {
@@ -793,6 +906,11 @@ export function serializeMarkdownSelection(
     return null;
   }
 
+  const listTextblock = extractSingleListTextblockSelection(doc, from, to);
+  if (listTextblock) {
+    return serializeMarkdown(schema.nodes.doc.create(null, listTextblock));
+  }
+
   const extraction: MarkdownSelectionExtraction = {
     nodes: [],
     fallbackToPlainText: false,
@@ -806,6 +924,46 @@ export function serializeMarkdownSelection(
   }
 
   return serializeMarkdown(schema.nodes.doc.create(null, extraction.nodes));
+}
+
+/**
+ * 列表序号和项目符号属于外层列表结构，不是正文里的可选字符。
+ * 当选区始终位于同一个列表正文块时，只复制该正文块，避免完整选中文字后补回未选中的列表标记。
+ */
+function extractSingleListTextblockSelection(
+  doc: ProseMirrorNode,
+  from: number,
+  to: number,
+): ProseMirrorNode | null {
+  const $from = doc.resolve(from);
+  const $to = doc.resolve(to);
+  if (!$from.sameParent($to) || !$from.parent.isTextblock || !isInsideListItem($from)) {
+    return null;
+  }
+
+  const textblock = $from.parent;
+  const contentFrom = $from.start($from.depth);
+  const contentTo = $from.end($from.depth);
+  if (from <= contentFrom && to >= contentTo) {
+    return textblock;
+  }
+
+  const localFrom = Math.max(0, from - contentFrom);
+  const localTo = Math.min(textblock.content.size, to - contentFrom);
+  if (localFrom >= localTo) {
+    return null;
+  }
+
+  return schema.nodes.paragraph.create(null, textblock.content.cut(localFrom, localTo));
+}
+
+function isInsideListItem($pos: ResolvedPos): boolean {
+  for (let depth = $pos.depth - 1; depth > 0; depth -= 1) {
+    if ($pos.node(depth).type === schema.nodes.list_item) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function appendSelectedMarkdownNodes(
@@ -1174,15 +1332,26 @@ function serializeTableCell(cell: ProseMirrorNode): string {
     }
     return true;
   });
-  return parts.join('').replace(/\\/g, '').replace(/\n/g, ' ').replace(/\|/g, '\\|').trim();
+  // 表格分隔符只在最终输出时转义，不能删除正文或代码中的反斜杠。
+  return parts.join('').replace(/\n/g, ' ').replace(/\|/g, '\\|').trim();
 }
 
 function serializeInlineText(node: ProseMirrorNode): string {
-  const text = escapeTableText(node.text ?? '');
+  const raw = node.text ?? '';
+  const code = node.marks.some((mark) => mark.type.name === 'code');
+  let text = escapeTableText(raw);
+  if (code) {
+    // 代码跨度内不能用反斜杠转义反引号；围栏须长于正文中的最长连续反引号。
+    const delimiter = '`'.repeat(
+      (raw.match(/`+/g) ?? []).reduce((longest, run) => Math.max(longest, run.length), 0) + 1,
+    );
+    const padding = /^`|`$/.test(raw) || (/^ .* $/.test(raw) && /[^ ]/.test(raw)) ? ' ' : '';
+    text = `${delimiter}${padding}${raw}${padding}${delimiter}`;
+  }
   return node.marks.reduce((value, mark) => {
     if (mark.type.name === 'strong') return `**${value}**`;
     if (mark.type.name === 'em') return `*${value}*`;
-    if (mark.type.name === 'code') return `\`${value.replace(/`/g, '\\`')}\``;
+    if (mark.type.name === 'code') return value;
     if (mark.type.name === 'strikethrough') return `~~${value}~~`;
     if (mark.type.name === 'underline') return `<u>${value}</u>`;
     if (mark.type.name === 'highlight') return `<mark>${value}</mark>`;
@@ -1220,7 +1389,7 @@ function splitTaskParagraph(
 }
 
 function escapeTableText(text: string): string {
-  return text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+  return text.replace(/\\/g, '\\\\');
 }
 
 function escapeMarkdownTextWithoutManualInlineMarkers(text: string): string {

@@ -389,6 +389,25 @@ describe('settings', () => {
     });
   });
 
+  it('loads and saves the automatic software update preference', async () => {
+    await expect(
+      loadAppPreferences(true, [
+        createSetting('appearanceThemeModelV1', true),
+        createSetting('softwareUpdateAutoCheckEnabled', false),
+      ]),
+    ).resolves.toMatchObject({ softwareUpdateAutoCheckEnabled: false });
+
+    await saveAppPreferences(
+      true,
+      { ...DEFAULT_APP_PREFERENCES, softwareUpdateAutoCheckEnabled: false },
+      ['softwareUpdateAutoCheckEnabled'],
+    );
+
+    expect(storageMock.updateAppSettings).toHaveBeenCalledWith({
+      softwareUpdateAutoCheckEnabled: false,
+    });
+  });
+
   it('normalizes close window behavior settings', () => {
     const normalized = normalizeAppPreferences({
       closeWindowBehavior: {} as never,

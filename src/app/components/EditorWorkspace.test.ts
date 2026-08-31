@@ -3,6 +3,8 @@ import { tick, type ComponentProps } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { extractOutline } from '../../lib/outline/outlineService';
 import EditorWorkspace from './EditorWorkspace.svelte';
+import type { MarkdownSourceEditorHandle } from './markdownSourceEditor';
+import type { EditorCore } from '../../lib/editor-core';
 
 type Props = ComponentProps<typeof EditorWorkspace>;
 
@@ -167,10 +169,11 @@ function createProps(markdown: string, overrides: Partial<Props> = {}): Props {
     activeOutlineId: '',
     collapsedOutlineIds: new Set(),
     visibleOutlineIds: new Set(outline.map((item) => item.id)),
-    sourceTextarea: undefined as unknown as HTMLTextAreaElement,
+    sourceEditor: undefined as unknown as MarkdownSourceEditorHandle,
     sourcePane: undefined as unknown as HTMLElement,
     semanticPane: undefined as unknown as HTMLElement,
     editorHost: undefined as unknown as HTMLDivElement,
+    editorCore: { subscribe: () => () => undefined } as unknown as EditorCore,
     updateMarkdown: noop,
     enterFrontMatterEdit: noop,
     leaveFrontMatterEdit: noop,

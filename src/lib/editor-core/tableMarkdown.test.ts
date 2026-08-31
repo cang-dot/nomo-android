@@ -1,7 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { parseMarkdown, serializeMarkdown } from './markdown';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 describe('table Markdown editing', () => {
+  it.each(['`行内代码`', 'Ctrl + \\', 'a|b', '  spaced  ', '``a`b``'])(
+    'preserves literal table code content: %s',
+    (text) => {
+      const markdown = `| A |\n| :--- |\n| <code>${text.replace(/`/g, '&#96;').replace(/\|/g, '&#124;')}</code> |`;
+      const parsed = parseMarkdown(markdown);
+      expect(parseMarkdown(serializeMarkdown(parsed)).eq(parsed)).toBe(true);
+    },
+  );
+
+  it.each(['README.md', 'sample.md'])(
+    'keeps node positions stable when serializing the complex document %s',
+    (file) => {
+      const doc = parseMarkdown(readFileSync(resolve(process.cwd(), file), 'utf8'));
+      expect(parseMarkdown(serializeMarkdown(doc)).eq(doc)).toBe(true);
+    },
+  );
+
   it('round-trips GFM table alignment markers', () => {
     const markdown = '| A | B | C |\n| :--- | :---: | ---: |\n| x | y | z |';
 

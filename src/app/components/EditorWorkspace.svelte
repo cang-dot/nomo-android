@@ -2,8 +2,7 @@
   import { ChevronDown, ChevronsDownUp, ChevronsUpDown } from '@lucide/svelte';
   import { onDestroy } from 'svelte';
   import { slide } from 'svelte/transition';
-  import type { ContextMenuItem, ContextMenuRequest, EditorMode } from '../../lib/editor-core';
-  import { createSourceTextareaImePunctuationFallback } from '../../lib/input/windowsImePunctuationFallback';
+  import type { ContextMenuItem, ContextMenuRequest, EditorCore } from '../../lib/editor-core';
   import type { FrontMatterBlock } from '../../lib/markdown/frontMatter';
   import type { OutlineItem } from '../../lib/outline/outlineService';
   import {
@@ -18,11 +17,20 @@
     transitionDuration,
   } from '../actions/motion';
   import FrontMatterCard from './FrontMatterCard.svelte';
+  import MarkdownSourceEditor from './MarkdownSourceEditor.svelte';
+  import type { MarkdownSourceEditorHandle } from './markdownSourceEditor';
+  import { syncEditorPanes } from '../services/markdownScrollSyncWorkspace';
   import { t } from '../i18n';
+  import type { EditorViewMode, SplitActivePane, SplitViewLayout } from '../types';
 
   export let interfaceLocale: string;
-  export let mode: EditorMode;
+  export let mode: EditorViewMode;
+  export let splitViewLayout: SplitViewLayout = 'semantic-source';
+  export let splitLeftPercent = 50;
+  export let splitActivePane: SplitActivePane = 'semantic';
+  export let splitAlignmentGuideVisible = false;
   export let markdown: string;
+  export let sourceDocumentId = '';
   export let largeDocumentMode: boolean;
   export let frontMatter: FrontMatterBlock | null;
   export let frontMatterEditing: boolean;
@@ -34,11 +42,15 @@
   export let activeOutlineId: string;
   export let collapsedOutlineIds: Set<string>;
   export let visibleOutlineIds: Set<string>;
-  export let sourceTextarea: HTMLTextAreaElement;
+  export let sourceEditor: MarkdownSourceEditorHandle;
   export let sourcePane: HTMLElement;
   export let semanticPane: HTMLElement;
   export let editorHost: HTMLDivElement;
-  export let updateMarkdown: (event: Event) => void;
+  export let editorCore: EditorCore;
+  export let updateMarkdown: (markdown: string) => void;
+  export let setSplitActivePane: (pane: SplitActivePane) => void = () => undefined;
+  export let updateSplitLeftPercent: (percent: number, persist: boolean) => void = () => undefined;
+  export let onSourceSelectionChange: (selectedMarkdown: string) => void = () => undefined;
   export let enterFrontMatterEdit: () => void;
   export let leaveFrontMatterEdit: () => void;
   export let updateFrontMatterContent: (content: string) => void;
@@ -74,6 +86,11 @@
   }
 
   let outlinePanel: HTMLElement;
+  let editorGrid: HTMLDivElement;
+  let sourcePaneContainer: HTMLElement;
+  let splitResizePointerId: number | null = null;
+  let splitResizeGrabOffset = 4;
+  let pendingSplitLeftPercent = splitLeftPercent;
   let pendingOutlineDrag: PendingOutlineDrag | null = null;
   let outlineDragging = false;
   let outlineDragPreview: HTMLElement | null = null;
@@ -93,53 +110,144 @@
   $: hasCollapsedExpandableOutline = outline.some(
     (item, index) => isOutlineItemExpandable(index) && collapsedOutlineIds.has(item.id),
   );
+  $: if (splitResizePointerId === null) {
+    pendingSplitLeftPercent = splitLeftPercent;
+  }
 
-  const sourceImeFallback = createSourceTextareaImePunctuationFallback();
+  const SPLIT_DIVIDER_WIDTH_PX = 8;
+
+  function clampSplitPercent(value: number) {
+    return Math.min(75, Math.max(25, Math.round(value * 10) / 10));
+  }
+
+  function updateSplitResizeFromPointer(event: PointerEvent, persist: boolean) {
+    if (!editorGrid || mode !== 'split') return;
+    const rect = editorGrid.getBoundingClientRect();
+    const usableWidth = rect.width - SPLIT_DIVIDER_WIDTH_PX;
+    if (usableWidth <= 0) return;
+    const leftTrackWidth = event.clientX - rect.left - splitResizeGrabOffset;
+    pendingSplitLeftPercent = clampSplitPercent((leftTrackWidth / usableWidth) * 100);
+    updateSplitLeftPercent(pendingSplitLeftPercent, persist);
+  }
+
+  function handleSplitResizePointerDown(event: PointerEvent) {
+    if (mode !== 'split' || event.button !== 0) return;
+    event.preventDefault();
+    splitResizePointerId = event.pointerId;
+    const target = event.currentTarget as HTMLElement;
+    const dividerRect = target.getBoundingClientRect();
+    splitResizeGrabOffset = Math.min(
+      SPLIT_DIVIDER_WIDTH_PX,
+      Math.max(0, event.clientX - dividerRect.left),
+    );
+    target.setPointerCapture(event.pointerId);
+    updateSplitResizeFromPointer(event, false);
+  }
+
+  function handleSplitResizePointerMove(event: PointerEvent) {
+    if (splitResizePointerId !== event.pointerId) return;
+    updateSplitResizeFromPointer(event, false);
+  }
+
+  function finishSplitResize(event: PointerEvent) {
+    if (splitResizePointerId !== event.pointerId) return;
+    if (event.type === 'pointerup') {
+      updateSplitResizeFromPointer(event, true);
+    } else {
+      updateSplitLeftPercent(pendingSplitLeftPercent, true);
+    }
+    const target = event.currentTarget as HTMLElement;
+    if (target.hasPointerCapture(event.pointerId)) {
+      target.releasePointerCapture(event.pointerId);
+    }
+    splitResizePointerId = null;
+  }
+
+  function handleSplitResizeKeydown(event: KeyboardEvent) {
+    if (mode !== 'split') return;
+    const step = event.shiftKey ? 10 : 2;
+    let nextPercent = splitLeftPercent;
+    if (event.key === 'ArrowLeft') nextPercent -= step;
+    else if (event.key === 'ArrowRight') nextPercent += step;
+    else if (event.key === 'Home') nextPercent = 25;
+    else if (event.key === 'End') nextPercent = 75;
+    else return;
+    event.preventDefault();
+    updateSplitLeftPercent(clampSplitPercent(nextPercent), true);
+  }
+
+  function handleSourceEditorReady(handle: MarkdownSourceEditorHandle) {
+    sourceEditor = handle;
+    sourcePane = handle.getScrollElement();
+    requestAnimationFrame(() => {
+      editorGrid?.dispatchEvent(new Event('nomo:editor-viewport-layout-refresh'));
+    });
+  }
 
   // 末行最多上移四分之一视口；只有真实内容已经溢出视口时才启用，
   // 避免短文档在缩放过程中因辅助留白误出现滚动条。
   const SCROLL_PAST_END_VIEWPORT_RATIO = 0.25;
   const LAYOUT_ROUNDING_TOLERANCE_PX = 1;
 
-  function measureScrollPastEndSpace(node: HTMLElement, _contentVersion: string) {
+  interface EditorPaneGeometryParams {
+    mode: EditorViewMode;
+    contentVersion: string;
+  }
+
+  interface PaneGeometry {
+    mode: 'source' | 'semantic';
+    pane: HTMLElement;
+    layout: HTMLElement;
+    bottomPadding: number;
+    naturalExtent: number;
+    viewportHeight: number;
+  }
+
+  function coordinateEditorPaneGeometry(
+    node: HTMLElement,
+    initialParams: EditorPaneGeometryParams,
+  ) {
+    let params = initialParams;
     let animationFrame = 0;
-    let observedLayout: HTMLElement | null = null;
-    let observedContentEnd: Element | null = null;
+    const observedTargets = new Set<Element>();
 
     const resizeObserver =
       typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleUpdate) : null;
 
-    const getEditorSurface = () => {
-      if (node.classList.contains('source-pane')) {
-        return node.querySelector<HTMLTextAreaElement>('.source-editor');
-      }
-      return node.querySelector<HTMLElement>('.ProseMirror');
+    const getPane = (paneMode: 'source' | 'semantic') => {
+      return node.querySelector<HTMLElement>(`.${paneMode}-pane`);
     };
 
-    const getContentEnd = (editorSurface: HTMLElement | null) => {
-      if (editorSurface instanceof HTMLTextAreaElement) {
-        return editorSurface;
+    const getEditorSurface = (pane: HTMLElement, paneMode: 'source' | 'semantic') => {
+      if (paneMode === 'source') {
+        return pane.querySelector<HTMLElement>('.cm-content');
       }
-      return editorSurface?.lastElementChild ?? editorSurface;
+      return pane.querySelector<HTMLElement>('.ProseMirror');
     };
 
-    const syncObservedTargets = (layout: HTMLElement | null, contentEnd: Element | null) => {
-      if (observedLayout !== layout) {
-        if (observedLayout) resizeObserver?.unobserve(observedLayout);
-        if (layout) resizeObserver?.observe(layout);
-        observedLayout = layout;
+    const getContentEnd = (editorSurface: HTMLElement | null) =>
+      editorSurface?.lastElementChild ?? editorSurface;
+
+    const syncObservedTargets = (nextTargets: Element[]) => {
+      const nextTargetSet = new Set(nextTargets);
+      for (const target of observedTargets) {
+        if (!nextTargetSet.has(target)) {
+          resizeObserver?.unobserve(target);
+          observedTargets.delete(target);
+        }
       }
-      if (observedContentEnd !== contentEnd) {
-        if (observedContentEnd) resizeObserver?.unobserve(observedContentEnd);
-        if (contentEnd) resizeObserver?.observe(contentEnd);
-        observedContentEnd = contentEnd;
+      for (const target of nextTargetSet) {
+        if (!observedTargets.has(target)) {
+          resizeObserver?.observe(target);
+          observedTargets.add(target);
+        }
       }
     };
 
-    const getElementBottomInPane = (element: Element) => {
-      const paneRect = node.getBoundingClientRect();
+    const getElementBottomInPane = (pane: HTMLElement, element: Element) => {
+      const paneRect = pane.getBoundingClientRect();
       const elementRect = element.getBoundingClientRect();
-      return elementRect.bottom - paneRect.top + node.scrollTop;
+      return elementRect.bottom - paneRect.top + pane.scrollTop;
     };
 
     const getEditorZoom = () => {
@@ -149,64 +257,186 @@
       return Number.isFinite(value) && value > 0 ? value : 1;
     };
 
-    const syncContentMinHeight = (editorSurface: HTMLElement, bottomPadding: number) => {
-      const paneRect = node.getBoundingClientRect();
-      const surfaceRect = editorSurface.getBoundingClientRect();
-      const surfaceTop = surfaceRect.top - paneRect.top + node.scrollTop;
-      const availableVisualHeight = Math.max(
-        0,
-        node.clientHeight - surfaceTop - bottomPadding - LAYOUT_ROUNDING_TOLERANCE_PX,
-      );
-      const minHeight = availableVisualHeight / getEditorZoom();
-      node.style.setProperty('--md-editor-content-min-height', `${minHeight}px`);
+    const setPixelVariable = (target: HTMLElement, name: string, value: number) => {
+      const nextValue = Math.max(0, Math.round(value * 10) / 10);
+      const currentValue = Number.parseFloat(target.style.getPropertyValue(name));
+      if (
+        Number.isFinite(currentValue) &&
+        Math.abs(currentValue - nextValue) <= LAYOUT_ROUNDING_TOLERANCE_PX
+      ) {
+        return false;
+      }
+      target.style.setProperty(name, `${nextValue}px`);
+      return true;
     };
 
-    const getSourceContentBottom = (textarea: HTMLTextAreaElement) => {
-      const paneRect = node.getBoundingClientRect();
-      const textareaRect = textarea.getBoundingClientRect();
-      const originalHeight = textarea.style.height;
-      const originalMinHeight = textarea.style.minHeight;
+    const getSplitSourceFrame = () => {
+      const style = getComputedStyle(node);
+      const top = Number.parseFloat(style.getPropertyValue('--md-editor-split-padding-top'));
+      const bottom = Number.parseFloat(style.getPropertyValue('--md-editor-split-padding-bottom'));
+      if (!Number.isFinite(top) || !Number.isFinite(bottom)) return null;
+      return { top: Math.max(0, top), bottom: Math.max(0, bottom) };
+    };
 
-      textarea.style.height = '0px';
-      textarea.style.minHeight = '0px';
-      const contentHeight = textarea.scrollHeight;
-      textarea.style.height = originalHeight;
-      textarea.style.minHeight = originalMinHeight;
+    const syncSplitSourceFrame = (pane: HTMLElement, top: number, bottom: number) => {
+      const zoom = getEditorZoom();
+      const topChanged = setPixelVariable(pane, '--md-editor-source-frame-padding-top', top / zoom);
+      const bottomChanged = setPixelVariable(
+        pane,
+        '--md-editor-source-frame-padding-bottom',
+        bottom / zoom,
+      );
+      if (topChanged || bottomChanged) sourceEditor?.requestMeasure();
+      return topChanged || bottomChanged;
+    };
 
-      return textareaRect.top - paneRect.top + node.scrollTop + contentHeight * getEditorZoom();
+    const syncContentMinHeight = (
+      variableTarget: HTMLElement,
+      scrollElement: HTMLElement,
+      editorSurface: HTMLElement,
+      bottomPadding: number,
+      source: boolean,
+    ) => {
+      const paneRect = scrollElement.getBoundingClientRect();
+      const surfaceRect = editorSurface.getBoundingClientRect();
+      const scrollScale = paneRect.height / scrollElement.clientHeight || 1;
+      const surfaceTop = (surfaceRect.top - paneRect.top) / scrollScale + scrollElement.scrollTop;
+      const availableVisualHeight = Math.max(
+        0,
+        scrollElement.clientHeight - surfaceTop - bottomPadding - LAYOUT_ROUNDING_TOLERANCE_PX,
+      );
+      const minHeight = source ? availableVisualHeight : availableVisualHeight / getEditorZoom();
+      setPixelVariable(variableTarget, '--md-editor-content-min-height', minHeight);
+    };
+
+    const measurePane = (paneMode: 'source' | 'semantic'): PaneGeometry | null => {
+      const pane = getPane(paneMode);
+      if (!pane || pane.clientHeight <= 0) return null;
+      const layout = pane.querySelector<HTMLElement>(':scope > .document-layout');
+      const editorSurface = getEditorSurface(pane, paneMode);
+      const contentEnd = getContentEnd(editorSurface);
+      if (!layout || !editorSurface || !contentEnd) return null;
+
+      const sourceFrame = paneMode === 'source' ? getSplitSourceFrame() : null;
+      const scrollElement =
+        paneMode === 'source' ? sourceEditor?.getScrollElement() : pane;
+      if (!scrollElement || scrollElement.clientHeight <= 0) return null;
+
+      const layoutBottomPadding = Number.parseFloat(getComputedStyle(layout).paddingBottom) || 0;
+      const bottomPadding = paneMode === 'source' ? (sourceFrame?.bottom ?? 0) / getEditorZoom() : layoutBottomPadding;
+      if (sourceFrame && syncSplitSourceFrame(pane, sourceFrame.top, sourceFrame.bottom)) {
+        scheduleUpdate();
+        return null;
+      }
+      syncContentMinHeight(
+        pane,
+        scrollElement,
+        editorSurface,
+        paneMode === 'source' && sourceFrame ? 0 : bottomPadding,
+        paneMode === 'source',
+      );
+      let contentBottom: number;
+      if (paneMode === 'source' && sourceEditor) {
+        if (sourceFrame) {
+          contentBottom = sourceFrame.top / getEditorZoom() + sourceEditor.getContentHeight();
+        } else {
+          contentBottom = sourceEditor.getLineTop(1) + sourceEditor.getContentHeight();
+        }
+      } else {
+        contentBottom = getElementBottomInPane(pane, contentEnd);
+      }
+      return {
+        mode: paneMode,
+        pane,
+        layout,
+        bottomPadding,
+        naturalExtent: contentBottom + bottomPadding,
+        viewportHeight: scrollElement.clientHeight,
+      };
+    };
+
+    const getIndividualSpacerHeight = (geometry: PaneGeometry) => {
+      const hasNaturalOverflow =
+        geometry.naturalExtent > geometry.viewportHeight + LAYOUT_ROUNDING_TOLERANCE_PX;
+      const totalTrailingSpace = hasNaturalOverflow
+        ? Math.max(geometry.bottomPadding, geometry.viewportHeight * SCROLL_PAST_END_VIEWPORT_RATIO)
+        : geometry.bottomPadding;
+      return Math.max(0, Math.round(totalTrailingSpace - geometry.bottomPadding));
+    };
+
+    const clearSharedLayoutHeight = (geometry: PaneGeometry | null) => {
+      geometry?.layout.style.removeProperty('--md-editor-split-layout-min-height');
+      if (geometry?.mode === 'source') {
+        geometry.pane.style.removeProperty('--md-editor-split-content-min-height');
+      }
+    };
+
+    const applyIndividualGeometry = (geometry: PaneGeometry | null) => {
+      if (!geometry) return;
+      clearSharedLayoutHeight(geometry);
+      setPixelVariable(
+        geometry.pane,
+        '--md-editor-scroll-past-end-space',
+        getIndividualSpacerHeight(geometry),
+      );
     };
 
     const update = () => {
       animationFrame = 0;
-      const layout = node.querySelector<HTMLElement>(':scope > .document-layout');
-      const editorSurface = getEditorSurface();
-      const contentEnd = getContentEnd(editorSurface);
-      syncObservedTargets(layout, contentEnd);
-      if (!layout || !editorSurface || !contentEnd || node.clientHeight <= 0) {
-        node.style.setProperty('--md-editor-content-min-height', '0px');
-        node.style.setProperty('--md-editor-scroll-past-end-space', '0px');
-        return;
-      }
+      const holdSplitGeometry =
+        node.dataset.modeTransitionFrom === 'split' && node.getAttribute('aria-busy') === 'true';
+      const needsSourceGeometry = params.mode !== 'semantic' || holdSplitGeometry;
+      const needsSemanticGeometry = params.mode !== 'source' || holdSplitGeometry;
+      const sourcePane = needsSourceGeometry ? getPane('source') : null;
+      const semanticPane = needsSemanticGeometry ? getPane('semantic') : null;
+      const sourceSurface = sourcePane ? getEditorSurface(sourcePane, 'source') : null;
+      const semanticSurface = semanticPane ? getEditorSurface(semanticPane, 'semantic') : null;
+      syncObservedTargets(
+        [
+          node,
+          sourcePane,
+          semanticPane,
+          sourcePane?.querySelector(':scope > .document-layout'),
+          semanticPane?.querySelector(':scope > .document-layout'),
+          sourceSurface,
+          semanticSurface,
+          getContentEnd(sourceSurface),
+          getContentEnd(semanticSurface),
+        ].filter((target): target is Element => Boolean(target)),
+      );
 
-      const bottomPadding = layout
-        ? Number.parseFloat(getComputedStyle(layout).paddingBottom) || 0
-        : 0;
-      syncContentMinHeight(editorSurface, bottomPadding);
-      const contentBottom =
-        contentEnd instanceof HTMLTextAreaElement
-          ? getSourceContentBottom(contentEnd)
-          : getElementBottomInPane(contentEnd);
-      const hasNaturalOverflow =
-        contentBottom + bottomPadding > node.clientHeight + LAYOUT_ROUNDING_TOLERANCE_PX;
-      const totalTrailingSpace = hasNaturalOverflow
-        ? Math.max(bottomPadding, node.clientHeight * SCROLL_PAST_END_VIEWPORT_RATIO)
-        : bottomPadding;
-      const spacerHeight = Math.max(0, Math.round(totalTrailingSpace - bottomPadding));
-      node.style.setProperty('--md-editor-scroll-past-end-space', `${spacerHeight}px`);
+      const sourceGeometry = needsSourceGeometry ? measurePane('source') : null;
+      const semanticGeometry = needsSemanticGeometry ? measurePane('semantic') : null;
+
+      applyIndividualGeometry(sourceGeometry);
+      applyIndividualGeometry(semanticGeometry);
+
+      const targetGeometryReady =
+        params.mode === 'split'
+          ? Boolean(sourceGeometry && semanticGeometry)
+          : Boolean(params.mode === 'source' ? sourceGeometry : semanticGeometry);
+      if (targetGeometryReady) {
+        node.dispatchEvent(
+          new CustomEvent('nomo:editor-pane-geometry-ready', {
+            detail: { mode: params.mode },
+          }),
+        );
+      }
     };
 
-    const handleViewportLayoutRefresh = () => update();
+    const handleViewportLayoutRefresh = (event: Event) => {
+      const detail = (event as CustomEvent<{ synchronous?: boolean }>).detail;
+      if (!detail?.synchronous) {
+        scheduleUpdate();
+        return;
+      }
+      if (animationFrame) cancelAnimationFrame(animationFrame);
+      animationFrame = 0;
+      update();
+    };
+    const handleModeTransitionComplete = () => scheduleUpdate();
     node.addEventListener('nomo:editor-viewport-layout-refresh', handleViewportLayoutRefresh);
+    node.addEventListener('nomo:mode-pane-transition-complete', handleModeTransitionComplete);
 
     function scheduleUpdate() {
       if (animationFrame) return;
@@ -219,13 +449,13 @@
 
     const mutationObserver =
       typeof MutationObserver === 'function' ? new MutationObserver(scheduleUpdate) : null;
-    resizeObserver?.observe(node);
     mutationObserver?.observe(node, { childList: true, subtree: true, characterData: true });
     window.addEventListener('resize', scheduleUpdate);
     scheduleUpdate();
 
     return {
-      update() {
+      update(nextParams: EditorPaneGeometryParams) {
+        params = nextParams;
         scheduleUpdate();
       },
       destroy() {
@@ -235,10 +465,23 @@
           'nomo:editor-viewport-layout-refresh',
           handleViewportLayoutRefresh,
         );
+        node.removeEventListener(
+          'nomo:mode-pane-transition-complete',
+          handleModeTransitionComplete,
+        );
         window.removeEventListener('resize', scheduleUpdate);
         if (animationFrame) cancelAnimationFrame(animationFrame);
-        node.style.removeProperty('--md-editor-content-min-height');
-        node.style.removeProperty('--md-editor-scroll-past-end-space');
+        for (const paneMode of ['source', 'semantic'] as const) {
+          const pane = getPane(paneMode);
+          pane?.style.removeProperty('--md-editor-content-min-height');
+          pane?.style.removeProperty('--md-editor-scroll-past-end-space');
+          pane?.style.removeProperty('--md-editor-source-frame-padding-top');
+          pane?.style.removeProperty('--md-editor-source-frame-padding-bottom');
+          pane?.style.removeProperty('--md-editor-split-content-min-height');
+          pane
+            ?.querySelector<HTMLElement>(':scope > .document-layout')
+            ?.style.removeProperty('--md-editor-split-layout-min-height');
+        }
       },
     };
   }
@@ -540,50 +783,99 @@
 
 {#key interfaceLocale}
   <div
+    bind:this={editorGrid}
     class="editor-grid"
     class:source-only={mode === 'source'}
+    class:split-view={mode === 'split'}
+    class:split-semantic-source={mode === 'split' && splitViewLayout === 'semantic-source'}
+    class:split-source-semantic={mode === 'split' && splitViewLayout === 'source-semantic'}
+    class:split-resizing={splitResizePointerId !== null}
+    style={`--split-left-track: ${splitLeftPercent}fr; --split-right-track: ${100 - splitLeftPercent}fr`}
+    use:coordinateEditorPaneGeometry={{ mode, contentVersion: markdown }}
+    use:syncEditorPanes={{
+      mode,
+      documentId: sourceDocumentId,
+      markdown,
+      sourceEditor,
+      editorCore,
+      largeDocumentMode,
+      activePane: splitActivePane,
+      paused: splitResizePointerId !== null,
+    }}
     use:modePaneMotion={{ mode, disabled: largeDocumentMode }}
   >
     <section
-      bind:this={sourcePane}
+      id="source-editor-pane"
+      bind:this={sourcePaneContainer}
       class="editor-pane source-pane"
+      class:split-pane-left={splitViewLayout === 'source-semantic'}
+      class:split-pane-right={splitViewLayout === 'semantic-source'}
+      class:split-pane-active={mode === 'split' && splitActivePane === 'source'}
       aria-label={t.markdownSource()}
-      use:measureScrollPastEndSpace={markdown}
-      on:scroll={() => {
-        updateActiveOutlineFromSourceScroll();
-        onSourceScroll?.();
-      }}
       on:contextmenu|preventDefault
+      on:pointerdown={() => mode === 'split' && setSplitActivePane('source')}
+      on:focusin={() => mode === 'split' && setSplitActivePane('source')}
     >
       <div class="document-layout">
-        <textarea
-          bind:this={sourceTextarea}
-          class="source-editor"
-          value={markdown}
-          readonly={readonlyDocumentMode}
-          on:keydown={sourceImeFallback.handleKeydown}
-          on:keyup={sourceImeFallback.handleKeyup}
-          on:beforeinput={sourceImeFallback.handleBeforeInput}
-          on:input={(event) => {
-            sourceImeFallback.handleInput();
-            updateMarkdown(event);
+        <MarkdownSourceEditor
+          bind:sourceEditor
+          {markdown}
+          documentId={sourceDocumentId}
+          {readonlyDocumentMode}
+          onMarkdownChange={updateMarkdown}
+          onSelectionChange={(selected) => {
+            onSourceSelectionChange(selected);
+            editorGrid?.dispatchEvent(new Event('nomo:source-caret-change'));
           }}
-          on:compositionstart={sourceImeFallback.handleCompositionStart}
-          on:compositionupdate={sourceImeFallback.handleCompositionUpdate}
-          on:compositionend={sourceImeFallback.handleCompositionEnd}
-          on:paste={handleEditorPaste}
-          on:drop={handleEditorDrop}
-          spellcheck="false"
-        ></textarea>
-        <div class="editor-scroll-past-end" data-scroll-past-end aria-hidden="true"></div>
+          onLayoutChange={() => editorGrid?.dispatchEvent(new Event('nomo:source-layout-change'))}
+          onPaste={handleEditorPaste}
+          onDrop={handleEditorDrop}
+          onReady={handleSourceEditorReady}
+          onScroll={() => {
+            updateActiveOutlineFromSourceScroll();
+            onSourceScroll?.();
+          }}
+        />
       </div>
     </section>
 
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+    <div
+      class="split-divider"
+      class:active={splitResizePointerId !== null}
+      role="separator"
+      aria-label={t.splitDivider()}
+      aria-hidden={mode !== 'split'}
+      aria-orientation="vertical"
+      aria-controls="semantic-editor-pane source-editor-pane"
+      aria-valuemin="25"
+      aria-valuemax="75"
+      aria-valuenow={Math.round(splitLeftPercent)}
+      tabindex={mode === 'split' ? 0 : -1}
+      on:pointerdown={handleSplitResizePointerDown}
+      on:pointermove={handleSplitResizePointerMove}
+      on:pointerup={finishSplitResize}
+      on:pointercancel={finishSplitResize}
+      on:lostpointercapture={finishSplitResize}
+      on:keydown={handleSplitResizeKeydown}
+    ></div>
+
+    {#if mode === 'split' && !largeDocumentMode}
+      <div
+        class="split-alignment-guide"
+        class:visible={splitAlignmentGuideVisible}
+        aria-hidden="true"
+      ></div>
+    {/if}
+
     <section
+      id="semantic-editor-pane"
       bind:this={semanticPane}
       class="semantic-pane"
+      class:split-pane-left={splitViewLayout === 'semantic-source'}
+      class:split-pane-right={splitViewLayout === 'source-semantic'}
+      class:split-pane-active={mode === 'split' && splitActivePane === 'semantic'}
       aria-label={t.semanticEditorArea()}
-      use:measureScrollPastEndSpace={markdown}
       on:scroll={() => {
         updateActiveOutlineFromSemanticScroll();
         onSemanticScroll?.();
@@ -592,6 +884,8 @@
       on:drop={handleEditorDrop}
       on:dragover|preventDefault
       on:contextmenu={handleSemanticContextMenu}
+      on:pointerdown={() => mode === 'split' && setSplitActivePane('semantic')}
+      on:focusin={() => mode === 'split' && setSplitActivePane('semantic')}
     >
       <div class="document-layout">
         {#if frontMatter}

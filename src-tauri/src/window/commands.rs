@@ -285,7 +285,9 @@ pub(crate) fn create_new_window(
     pending_folder: Option<String>,
 ) -> Result<String, String> {
     let timer = std::time::Instant::now();
-    let id = format!("window-{}", crate::config::now_ts());
+    let id = app
+        .state::<crate::window::open_targets::OpenTargetRegistry>()
+        .next_window_label(&app)?;
     crate::app_logger::info(
         "Window",
         &format!(

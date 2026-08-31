@@ -167,7 +167,7 @@ describe('createEditorCore', () => {
     editor.destroy();
   });
 
-  it('keeps complete list items and code blocks as Markdown structures', () => {
+  it('copies a single list item textblock without its outer list marker', () => {
     const listTarget = document.createElement('div');
     const listEditor = createEditorCore({ markdown: '- 第一项\n- 第二项', target: listTarget });
     const listView = (listEditor as unknown as { view: EditorView }).view;
@@ -181,9 +181,105 @@ describe('createEditorCore', () => {
         ),
       ),
     );
-    expect(listEditor.getClipboardPayload()?.text).toBe('- 第一项');
+    expect(listEditor.getClipboardPayload()?.text).toBe('第一项');
     listEditor.destroy();
 
+    const orderedTarget = document.createElement('div');
+    const orderedEditor = createEditorCore({
+      markdown: '3. **标题**和`代码`',
+      target: orderedTarget,
+    });
+    const orderedView = (orderedEditor as unknown as { view: EditorView }).view;
+    const orderedParagraph = findNodeByText(orderedView.state.doc, 'paragraph', '标题和代码');
+    orderedView.dispatch(
+      orderedView.state.tr.setSelection(
+        TextSelection.create(
+          orderedView.state.doc,
+          orderedParagraph.pos + 1,
+          orderedParagraph.pos + 1 + orderedParagraph.node.content.size,
+        ),
+      ),
+    );
+    expect(orderedEditor.getClipboardPayload()?.text).toBe('**标题**和`代码`');
+
+    orderedView.dispatch(
+      orderedView.state.tr.setSelection(
+        TextSelection.create(
+          orderedView.state.doc,
+          orderedParagraph.pos + 2,
+          orderedParagraph.pos + 1 + orderedParagraph.node.content.size,
+        ),
+      ),
+    );
+    expect(orderedEditor.getClipboardPayload()?.text).toBe('**题**和`代码`');
+    orderedEditor.destroy();
+  });
+
+  it('keeps selected task markers but removes the outer list marker', () => {
+    const target = document.createElement('div');
+    const editor = createEditorCore({ markdown: '- [x] 已完成', target });
+    const view = (editor as unknown as { view: EditorView }).view;
+    const paragraph = findNodeByText(view.state.doc, 'paragraph', '[x] 已完成');
+
+    view.dispatch(
+      view.state.tr.setSelection(
+        TextSelection.create(
+          view.state.doc,
+          paragraph.pos + 1,
+          paragraph.pos + 1 + paragraph.node.content.size,
+        ),
+      ),
+    );
+
+    expect(editor.getClipboardPayload()?.text).toBe('[x] 已完成');
+    editor.destroy();
+  });
+
+  it('keeps list structure when copying across items, nested content, or the full document', () => {
+    const target = document.createElement('div');
+    const editor = createEditorCore({
+      markdown: '3. 第一项\n4. 第二项\n5. 第三项',
+      target,
+    });
+    const view = (editor as unknown as { view: EditorView }).view;
+    const firstParagraph = findNodeByText(view.state.doc, 'paragraph', '第一项');
+    const secondParagraph = findNodeByText(view.state.doc, 'paragraph', '第二项');
+
+    view.dispatch(
+      view.state.tr.setSelection(
+        TextSelection.create(
+          view.state.doc,
+          firstParagraph.pos + 1,
+          secondParagraph.pos + 1 + secondParagraph.node.content.size,
+        ),
+      ),
+    );
+    expect(editor.getClipboardPayload()?.text).toBe('3. 第一项\n4. 第二项');
+
+    view.dispatch(view.state.tr.setSelection(new AllSelection(view.state.doc)));
+    expect(editor.getClipboardPayload()?.text).toBe('3. 第一项\n4. 第二项\n5. 第三项');
+    editor.destroy();
+
+    const nestedTarget = document.createElement('div');
+    const nestedEditor = createEditorCore({ markdown: '1. 父项\n   - 子项', target: nestedTarget });
+    const nestedView = (nestedEditor as unknown as { view: EditorView }).view;
+    const parentParagraph = findNodeByText(nestedView.state.doc, 'paragraph', '父项');
+    const childParagraph = findNodeByText(nestedView.state.doc, 'paragraph', '子项');
+    nestedView.dispatch(
+      nestedView.state.tr.setSelection(
+        TextSelection.create(
+          nestedView.state.doc,
+          parentParagraph.pos + 1,
+          childParagraph.pos + 1 + childParagraph.node.content.size,
+        ),
+      ),
+    );
+    expect(nestedEditor.getClipboardPayload()?.text).toContain('1. 父项');
+    expect(nestedEditor.getClipboardPayload()?.text).toContain('- 子项');
+    nestedEditor.destroy();
+  });
+
+  it('keeps complete code blocks as Markdown structures', () => {
     const codeTarget = document.createElement('div');
     const codeEditor = createEditorCore({
       markdown: '```ts\nconst value = 1;\n```',

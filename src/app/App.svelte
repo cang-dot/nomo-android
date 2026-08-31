@@ -39,10 +39,12 @@
     type EditorMode,
     type EditorPasteMode,
     type EditorSearchMatch,
+    type EditorSelectionEvent,
     type EditorThemeOptions,
   } from '../lib/editor-core';
   import {
     analyzeMarkdown,
+    calculateDocumentStats,
     type DocumentStats,
     type OutlineItem,
   } from '../lib/outline/outlineService';
@@ -54,6 +56,7 @@
     type FrontMatterBlock,
   } from '../lib/markdown/frontMatter';
   import AppShell from './components/AppShell.svelte';
+  import type { MarkdownSourceEditorHandle } from './components/markdownSourceEditor';
   import type SegmentedTextEditorWorkspaceComponent from './components/SegmentedTextEditorWorkspace.svelte';
   import FolderOpenDialog from './components/FolderOpenDialog.svelte';
   import {
@@ -64,6 +67,9 @@
     type PersistedWorkspaceState,
     type PersistedWorkspaceTab,
     type MarkdownTabState,
+    type EditorViewMode,
+    type SplitActivePane,
+    type SplitViewLayout,
     type Tab,
   } from './types';
   import {
@@ -86,8 +92,11 @@
     exitMarkdownMiniMode,
     openSettingsWindow,
     refreshInterfaceLanguageChrome,
+    prepareOpenTargetWindow,
     setMarkdownMiniModePinned,
+    syncWindowOpenTargets,
     updateAppWindowTitle,
+    type OpenTarget,
   } from './services/desktopWindow';
   import { createImageInsertionHandlers } from './services/imageInsertion';
   import { readEditorClipboard, writeEditorClipboard } from './services/clipboard';
@@ -152,6 +161,7 @@
     type CodeBlockIndentPreference,
     type ExternalFileChangeBehavior,
     type InterfaceLanguagePreference,
+    type OpenDefaultBehavior,
     type SettingsUpdatedPayload,
     type ShortcutPreferences,
   } from './services/settings';
@@ -200,6 +210,8 @@
     getSourceScrollAnchor,
     restoreSemanticReadingPosition,
     restoreSourceReadingPosition,
+    scrollSemanticToAnchor,
+    scrollSourceToAnchor,
     setScrollTop,
     type OutlineScrollAnchor,
   } from './services/outlineNavigation';
@@ -246,16 +258,17 @@
   import { reconcileSegmentedSaveState } from './services/segmentedSaveReconciliation';
   import { getOpenDocumentRenameBlock } from './services/documentRenameGuard';
   import { createMarkdownLintController } from './services/markdownLintController';
-  import {
-    EditorLinkResolutionError,
-    resolveEditorLink,
-  } from './services/documentLinkNavigation';
+  import { EditorLinkResolutionError, resolveEditorLink } from './services/documentLinkNavigation';
 
   const RECOVERY_KEY = 'nomo-save-recovery';
   const segmentedDocumentPort = createTauriSegmentedDocumentPort();
-  type WritingStatsMetric = 'lines' | 'words' | 'chars';
+  type WritingStatsMetric = 'lines' | 'words' | 'visibleChars' | 'chars';
   type CloseWindowAction = Exclude<CloseWindowBehavior, 'ask-every-time'>;
   type CloseWindowChoiceResult = { behavior: CloseWindowAction; remember: boolean } | null;
+  type OpenTargetChoiceResult = {
+    choice: 'current-window' | 'new-window';
+    remember: boolean;
+  } | null;
   type ZoomScrollAnchor = {
     pane: HTMLElement;
     element: HTMLElement;
@@ -283,7 +296,12 @@
     bootAppearance,
     document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
   );
-  let mode: EditorMode = DEFAULT_APP_PREFERENCES.editorMode;
+  let mode: EditorViewMode = DEFAULT_APP_PREFERENCES.editorMode;
+  let preferredEditorMode: EditorViewMode = DEFAULT_APP_PREFERENCES.editorMode;
+  let splitViewLayout: SplitViewLayout = DEFAULT_APP_PREFERENCES.splitViewLayout;
+  let splitLeftPercent = DEFAULT_APP_PREFERENCES.splitLeftPercent;
+  let splitActivePane: SplitActivePane = 'semantic';
+  let splitAlignmentGuideVisible = false;
   let themeMode: ThemeMode = bootAppearance.themeMode;
   let colorThemeId = bootAppearance.colorThemeId;
   let documentStyleId = bootAppearance.documentStyleId;
@@ -306,6 +324,8 @@
   let visibleOutlineIds = new Set(outline.map((item) => item.id));
   let suppressOutlineScrollUntil = 0;
   let stats: DocumentStats = analyzeMarkdown('').stats;
+  let selectedStats: DocumentStats | null = null;
+  $: effectiveStats = selectedStats ?? stats;
   let writingStatsVisible = DEFAULT_APP_PREFERENCES.writingStatsVisible;
   let writingStatsMetric: WritingStatsMetric = DEFAULT_APP_PREFERENCES.writingStatsMetric;
   let readingTimeVisible = DEFAULT_APP_PREFERENCES.readingTimeVisible;
@@ -331,18 +351,19 @@
   let copyMarkdownSyntaxEnabled = DEFAULT_APP_PREFERENCES.copyMarkdownSyntaxEnabled;
   let shortcutPreferences: ShortcutPreferences = { ...DEFAULT_APP_PREFERENCES.shortcutPreferences };
   let imageSettings: ImageHandlingSettings = { ...DEFAULT_IMAGE_HANDLING_SETTINGS };
-  let folderOpenDefaultBehavior: 'current-window' | 'new-window' | 'ask-every-time' =
-    DEFAULT_APP_PREFERENCES.folderOpenDefaultBehavior;
-  let folderOpenDialogPath: string | null = null;
-  let folderOpenDialogName = '';
+  let openDefaultBehavior: OpenDefaultBehavior = DEFAULT_APP_PREFERENCES.openDefaultBehavior;
+  let pendingOpenChoice: OpenTarget | null = null;
+  let pendingOpenChoiceResolver: ((result: OpenTargetChoiceResult) => void) | null = null;
   let editorHost: HTMLDivElement,
     fileInput: HTMLInputElement,
-    sourceTextarea: HTMLTextAreaElement,
+    sourceEditor: MarkdownSourceEditorHandle,
     semanticPane: HTMLElement,
     sourcePane: HTMLElement;
   let segmentedWorkspace: SegmentedTextEditorWorkspaceComponent | null = null;
   let mountedEditorHost: HTMLDivElement | null = null;
   let pendingSourceScrollTop: number | null = null;
+  let splitSemanticRefreshTimer: number | null = null;
+  let splitSemanticRefreshGeneration = 0;
   let refreshEditorViewportLayout: () => void = () => undefined;
   let largeDocumentMode = false,
     readonlyDocumentMode = false,
@@ -423,6 +444,7 @@
 
   const CONTENT_ANALYSIS_DEBOUNCE_MS = 120;
   const SEARCH_DEBOUNCE_MS = 150;
+  const SPLIT_SEMANTIC_REFRESH_DEBOUNCE_MS = 150;
 
   // 上下文菜单状态
   let contextMenuX = 0;
@@ -564,8 +586,8 @@
   }
 
   function revealMarkdownLintIssue(issue: MarkdownLintIssue): boolean {
-    if (mode === 'semantic') return editor.revealMarkdownLine(issue.lineNumber);
-    if (!sourceTextarea) return false;
+    if (getActiveEditorMode() === 'semantic') return editor.revealMarkdownLine(issue.lineNumber);
+    if (!sourceEditor) return false;
 
     const lineStarts = [0];
     for (let index = 0; index < markdown.length; index += 1) {
@@ -576,8 +598,8 @@
     const columnOffset = Math.max(0, (issue.columnNumber ?? 1) - 1);
     const from = Math.min(markdown.length, lineStart + columnOffset);
     const to = Math.min(markdown.length, from + Math.max(1, issue.rangeLength ?? 1));
-    sourceTextarea.focus();
-    sourceTextarea.setSelectionRange(from, to);
+    sourceEditor.focus();
+    sourceEditor.revealRange(from, to);
     return true;
   }
 
@@ -594,12 +616,14 @@
   let closeWindowBehavior = DEFAULT_APP_PREFERENCES.closeWindowBehavior;
   let externalFileChangeBehavior = DEFAULT_APP_PREFERENCES.externalFileChangeBehavior;
   let windowLabel = '';
+  let lastWindowOpenTargetsSignature = '';
+  let openTargetOperationQueue = Promise.resolve();
   let developerMode = DEFAULT_APP_PREFERENCES.developerMode;
 
   let markdownMiniActive = false;
   let markdownMiniPinned = true;
   let markdownMiniTransitioning = false;
-  let markdownMiniPreviousMode: EditorMode | null = null;
+  let markdownMiniPreviousMode: EditorViewMode | null = null;
 
   function hasPersistableReadingPositionPath(path: string) {
     return Boolean(desktopEnabled && path && path !== t.untitledMarkdown());
@@ -611,6 +635,38 @@
       if (!currentTabIds.has(tabId)) {
         sessionReadingPositions.delete(tabId);
       }
+    }
+  }
+
+  function getCurrentWindowOpenTargetsSnapshot() {
+    const filePaths = Array.from(
+      new Set(tabs.map((tab) => tab.nativePath).filter((path): path is string => Boolean(path))),
+    ).sort();
+    return {
+      folderPath: currentFolderPath || null,
+      filePaths,
+    };
+  }
+
+  async function syncCurrentWindowOpenTargetsNow() {
+    if (!desktopEnabled || !windowLabel || appBootState !== 'ready') return;
+    const snapshot = getCurrentWindowOpenTargetsSnapshot();
+    const signature = JSON.stringify([snapshot.folderPath, snapshot.filePaths]);
+    await syncWindowOpenTargets(desktopEnabled, snapshot);
+    lastWindowOpenTargetsSignature = signature;
+  }
+
+  $: if (desktopEnabled && windowLabel && appBootState === 'ready') {
+    const snapshot = getCurrentWindowOpenTargetsSnapshot();
+    const filePaths = snapshot.filePaths;
+    const signature = JSON.stringify([currentFolderPath || null, filePaths]);
+    if (signature !== lastWindowOpenTargetsSignature) {
+      lastWindowOpenTargetsSignature = signature;
+      void syncWindowOpenTargets(desktopEnabled, snapshot).catch(() => {
+        if (lastWindowOpenTargetsSignature === signature) {
+          lastWindowOpenTargetsSignature = '';
+        }
+      });
     }
   }
 
@@ -1145,6 +1201,12 @@
     await saveMarkdownFile(true);
   }
 
+  function flushActiveEditorView() {
+    if (mode === 'split' && splitActivePane === 'source') {
+      refreshSplitSemanticView();
+    }
+  }
+
   function syncActiveTabMarkdownFromEditor() {
     if (!activeTabId) return markdown;
     const activeTab = tabs.find((tab) => tab.id === activeTabId);
@@ -1152,6 +1214,7 @@
       // 分段标签的正文只存在于 Rust session 与局部 CodeMirror window，禁止触发 Markdown flush。
       return markdown;
     }
+    flushActiveEditorView();
     const currentMarkdown = editor.flushMarkdown();
     if (currentMarkdown !== markdown) {
       markdown = currentMarkdown;
@@ -1183,7 +1246,7 @@
     frontMatterEditing = false;
     markdownMiniActive = true;
 
-    const shouldUseSemanticEditor = !largeDocumentMode && mode === 'source';
+    const shouldUseSemanticEditor = !largeDocumentMode && mode !== 'semantic';
     const nativeTransition = enterMarkdownMiniMode(desktopEnabled, markdownMiniPinned);
 
     try {
@@ -1239,7 +1302,7 @@
       markdownMiniPreviousMode = null;
       await tick();
       refreshEditorViewportLayout();
-      if (mode === 'semantic' && !readonlyDocumentMode) editor.focus();
+      if (getActiveEditorMode() === 'semantic' && !readonlyDocumentMode) editor.focus();
 
       if (options?.showExternalChange !== false && externalFileChange.type !== 'none') {
         openExternalChangeDialog(externalFileChange);
@@ -1300,9 +1363,72 @@
       outline,
       sourcePane.scrollTop,
       getSourceLineHeight(),
-      sourceTextarea,
+      sourceEditor,
       sourcePane,
     );
+  }
+
+  function getActiveEditorMode(): EditorMode {
+    return mode === 'split' ? splitActivePane : mode;
+  }
+
+  function getCoreModeForView(nextMode: EditorViewMode): EditorMode {
+    return nextMode === 'source' ? 'source' : 'semantic';
+  }
+
+  function clearSplitSemanticRefreshTimer() {
+    if (splitSemanticRefreshTimer !== null) {
+      window.clearTimeout(splitSemanticRefreshTimer);
+      splitSemanticRefreshTimer = null;
+    }
+  }
+
+  function refreshSplitSemanticView() {
+    clearSplitSemanticRefreshTimer();
+    const generation = ++splitSemanticRefreshGeneration;
+    if (mode !== 'split') return;
+
+    editor.refreshSemanticView();
+    void tick().then(() => {
+      if (mode !== 'split' || generation !== splitSemanticRefreshGeneration) return;
+      const editorGrid =
+        sourcePane?.closest<HTMLElement>('.editor-grid') ??
+        semanticPane?.closest<HTMLElement>('.editor-grid');
+      editorGrid?.dispatchEvent(new Event('nomo:editor-viewport-layout-refresh'));
+    });
+  }
+
+  function scheduleSplitSemanticRefresh() {
+    if (mode !== 'split') return;
+    clearSplitSemanticRefreshTimer();
+    const generation = ++splitSemanticRefreshGeneration;
+    splitSemanticRefreshTimer = window.setTimeout(() => {
+      splitSemanticRefreshTimer = null;
+      if (mode !== 'split' || generation !== splitSemanticRefreshGeneration) return;
+      refreshSplitSemanticView();
+    }, SPLIT_SEMANTIC_REFRESH_DEBOUNCE_MS);
+  }
+
+  function setSplitActivePane(nextPane: SplitActivePane) {
+    if (mode !== 'split' || splitActivePane === nextPane) return;
+
+    if (nextPane === 'source') {
+      // ProseMirror 的序列化是延迟的；源码区接管前必须先取得最新 Markdown。
+      const latestMarkdown = editor.getMarkdown();
+      // 是否有变化由源码编辑器按相同换行规则判断；切栏不制造全文替换。
+      sourceEditor?.setMarkdown(latestMarkdown, { addToHistory: false });
+    } else {
+      // 源码输入会延迟重建语义 DOM；语义区接管前强制刷新，避免旧 DOM 覆盖新内容。
+      refreshSplitSemanticView();
+    }
+    splitActivePane = nextPane;
+  }
+
+  function updateSplitLeftPercent(nextPercent: number, persist: boolean) {
+    splitLeftPercent = Math.min(75, Math.max(25, Math.round(nextPercent * 10) / 10));
+    if (persist) {
+      void updateAppSetting('splitLeftPercent', splitLeftPercent).catch(() => undefined);
+    }
   }
 
   function getReadingPositionForTab(
@@ -1339,11 +1465,11 @@
   }
 
   function saveCurrentReadingPositionToMemoryOnly(
-    modeToSave: ReadingPositionMode = mode,
+    modeToSave: ReadingPositionMode = getActiveEditorMode(),
     anchor: OutlineScrollAnchor | null = getCurrentReadingAnchor(modeToSave),
   ) {
-    const activeTab = tabs.find((tab): tab is MarkdownTabState =>
-      tab.id === activeTabId && isMarkdownTab(tab),
+    const activeTab = tabs.find(
+      (tab): tab is MarkdownTabState => tab.id === activeTabId && isMarkdownTab(tab),
     );
     if (!activeTab) return;
     saveReadingPositionForTab(activeTab, modeToSave, anchor, false);
@@ -1365,8 +1491,11 @@
 
   // 加载指定 Tab 的状态并更新编辑器
   function loadTabState(tab: Tab) {
+    clearSplitSemanticRefreshTimer();
+    splitSemanticRefreshGeneration += 1;
     clearReadingPositionSaveTimer();
     cancelPendingReadingPositionRestore();
+    selectedStats = null;
     isSwitchingTab = true;
     try {
       dirty = tab.dirty;
@@ -1398,16 +1527,18 @@
       version = tab.version;
       largeDocumentMode = tab.largeDocumentMode;
       readonlyDocumentMode = tab.readonlyDocumentMode;
-      const nextMode = largeDocumentMode ? 'source' : mode;
-      const storedPosition = getReadingPositionForTab(tab, nextMode);
+      const nextViewMode: EditorViewMode = largeDocumentMode ? 'source' : preferredEditorMode;
+      const nextReadingMode: ReadingPositionMode =
+        nextViewMode === 'split' ? splitActivePane : nextViewMode;
+      const storedPosition = getReadingPositionForTab(tab, nextReadingMode);
       const restoreGeneration = readingPositionRestoreGeneration;
 
       if (editor) {
         editor.updateOptions({
           readonly: readonlyDocumentMode,
-          mode: nextMode,
+          mode: getCoreModeForView(nextViewMode),
         });
-        mode = nextMode;
+        mode = nextViewMode;
         editor.setMarkdown(markdown, {
           reason: 'switch-tab',
           dirty: tab.dirty,
@@ -1428,12 +1559,7 @@
       applyOutlineDefaultExpansion();
       stats = analysis.stats;
       syncSourceTextareaHeight();
-      scheduleReadingPositionRestore(
-        tab,
-        nextMode,
-        storedPosition,
-        restoreGeneration,
-      );
+      scheduleReadingPositionRestore(tab, nextReadingMode, storedPosition, restoreGeneration);
     } finally {
       isSwitchingTab = false;
     }
@@ -1484,20 +1610,30 @@
   }
 
   function handleSemanticScroll() {
-    if (programmaticReadingScrollTokens.has('semantic')) return;
+    if (
+      programmaticReadingScrollTokens.has('semantic') ||
+      semanticPane?.dataset.nomoSyncScroll === 'true'
+    ) {
+      return;
+    }
     cancelPendingReadingPositionRestore();
     debounceReadingPositionSave('semantic');
   }
 
   function handleSourceScroll() {
-    if (programmaticReadingScrollTokens.has('source')) return;
+    if (
+      programmaticReadingScrollTokens.has('source') ||
+      sourcePane?.dataset.nomoSyncScroll === 'true'
+    ) {
+      return;
+    }
     cancelPendingReadingPositionRestore();
     debounceReadingPositionSave('source');
   }
 
   function debounceReadingPositionSave(modeToSave: ReadingPositionMode) {
-    const activeTab = tabs.find((tab): tab is MarkdownTabState =>
-      tab.id === activeTabId && isMarkdownTab(tab),
+    const activeTab = tabs.find(
+      (tab): tab is MarkdownTabState => tab.id === activeTabId && isMarkdownTab(tab),
     );
     if (!activeTab) return;
     const anchor = getCurrentReadingAnchor(modeToSave);
@@ -1569,7 +1705,7 @@
         pending.mode === targetMode &&
         activeTabId === tab.id &&
         filePath === tab.filePath &&
-        mode === targetMode;
+        getActiveEditorMode() === targetMode;
       if (!targetStillActive) {
         if (pending?.generation === generation) {
           pendingReadingPositionRestore = null;
@@ -1581,15 +1717,14 @@
       const contentReady =
         targetMode === 'semantic'
           ? Boolean(semanticPane?.querySelector('.ProseMirror'))
-          : Boolean(sourceTextarea && sourceTextarea.value === markdown);
+          : Boolean(sourceEditor && sourceEditor.getMarkdown() === markdown);
       const expectsNonTop =
         anchor.documentProgress > 0.001 ||
         anchor.sourceLine > 1 ||
         (typeof anchor.scrollTop === 'number' && anchor.scrollTop > 1) ||
         (typeof anchor.offsetFromTop === 'number' && Math.abs(anchor.offsetFromTop) > 1);
       const layoutReady =
-        pane != null &&
-        (!expectsNonTop || Math.max(0, pane.scrollHeight - pane.clientHeight) > 0);
+        pane != null && (!expectsNonTop || Math.max(0, pane.scrollHeight - pane.clientHeight) > 0);
 
       if (!pane || !contentReady || !layoutReady) {
         if (remainingAttempts > 0) {
@@ -1609,7 +1744,7 @@
           });
           return;
         }
-        restoreSourceReadingPosition(outline, sourcePane, sourceTextarea, anchor, {
+        restoreSourceReadingPosition(outline, sourcePane, sourceEditor, anchor, {
           anchorMode: position.anchorMode,
           behavior: 'instant',
         });
@@ -1676,7 +1811,7 @@
   }
 
   const exitApp = () => requestExitApp();
-  const createNewWindow = (folderPath?: string) => createAppWindow(desktopEnabled, folderPath);
+  const createNewWindow = () => createAppWindow(desktopEnabled);
 
   function resolveFolderName(path: string): string {
     const normalized = path.replace(/\\/g, '/').replace(/\/$/, '');
@@ -1805,46 +1940,136 @@
     }
   }
 
-  async function openFolderInNewWindow(folderPath: string) {
-    await rememberNativeFolder(folderPath);
-    await refreshRecentFiles();
-    await createNewWindow(folderPath);
+  function isReusableInitialWindow() {
+    if (
+      appBootState !== 'ready' ||
+      currentFolderPath ||
+      workspaceRestorePreparation ||
+      deferredWorkspaceRestore ||
+      isSwitchingTab ||
+      markdownMiniActive ||
+      markdownMiniTransitioning ||
+      dirty ||
+      nativePath
+    ) {
+      return false;
+    }
+    if (tabs.length === 0) {
+      return true;
+    }
+    return tabs.length === 1 && isReusableUntitledTab(tabs[0]);
   }
 
-  async function handleFolderOpenChoice(
+  async function openTargetInCurrentWindow(target: OpenTarget) {
+    if (target.kind === 'folder') {
+      await openFolderInCurrentWindow(target.path);
+      return;
+    }
+    for (const path of target.paths) {
+      await openFilePathInCurrentWindow(path);
+    }
+  }
+
+  async function openTargetInNewWindow(target: OpenTarget) {
+    const decision = await prepareOpenTargetWindow(desktopEnabled, target, true);
+    if (decision.action === 'handled') {
+      return;
+    }
+    if (decision.action === 'activate-current') {
+      await openTargetInCurrentWindow(decision.target);
+      return;
+    }
+    if (decision.action === 'open-current') {
+      await openTargetInCurrentWindow(decision.target);
+      return;
+    }
+    const created = await createAppWindow(desktopEnabled, decision.windowLabel);
+    if (!created) {
+      statusMessage = target.kind === 'folder' ? t.loadFolderTreeFailed() : t.openFileFailed();
+    }
+  }
+
+  function enqueueOpenTargetOperation<T>(operation: () => Promise<T>) {
+    const result = openTargetOperationQueue.then(operation);
+    openTargetOperationQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  function openTargetWithBehavior(target: OpenTarget) {
+    return enqueueOpenTargetOperation(() => routeOpenTargetWithBehavior(target));
+  }
+
+  async function routeOpenTargetWithBehavior(target: OpenTarget) {
+    await syncCurrentWindowOpenTargetsNow();
+    const decision = await prepareOpenTargetWindow(desktopEnabled, target, false);
+    if (decision.action === 'handled') {
+      return;
+    }
+    if (decision.action === 'activate-current') {
+      await openTargetInCurrentWindow(decision.target);
+      return;
+    }
+    const remainingTarget = decision.target;
+
+    if (isReusableInitialWindow() || openDefaultBehavior === 'current-window') {
+      await openTargetInCurrentWindow(remainingTarget);
+      return;
+    }
+    if (openDefaultBehavior === 'new-window') {
+      await openTargetInNewWindow(remainingTarget);
+      return;
+    }
+
+    const result = await requestOpenTargetChoice(remainingTarget);
+    if (!result) return;
+    if (result.remember) {
+      openDefaultBehavior = result.choice;
+      await updateAppSetting('openDefaultBehavior', result.choice).catch(() => undefined);
+    }
+    if (result.choice === 'current-window') {
+      await openTargetInCurrentWindow(remainingTarget);
+    } else {
+      await openTargetInNewWindow(remainingTarget);
+    }
+  }
+
+  function openFolderWithBehavior(folderPath: string) {
+    return openTargetWithBehavior({ kind: 'folder', path: folderPath });
+  }
+
+  function requestOpenTargetChoice(target: OpenTarget) {
+    pendingOpenChoice = target;
+    return new Promise<OpenTargetChoiceResult>((resolve) => {
+      pendingOpenChoiceResolver = resolve;
+    });
+  }
+
+  function resolveOpenTargetChoice(result: OpenTargetChoiceResult) {
+    const resolve = pendingOpenChoiceResolver;
+    pendingOpenChoice = null;
+    pendingOpenChoiceResolver = null;
+    resolve?.(result);
+  }
+
+  function handleOpenTargetChoice(
     event: CustomEvent<{ choice: 'current-window' | 'new-window'; remember: boolean }>,
   ) {
-    const { choice, remember } = event.detail;
-    folderOpenDialogPath = null;
-
-    if (!folderOpenDialogName) return;
-
-    if (remember) {
-      folderOpenDefaultBehavior = choice;
-      await updateAppSetting('folderOpenDefaultBehavior', choice).catch(() => undefined);
-    }
-
-    if (choice === 'current-window') {
-      await openFolderInCurrentWindow(folderOpenDialogName);
-    } else {
-      await openFolderInNewWindow(folderOpenDialogName);
-    }
-    folderOpenDialogName = '';
+    resolveOpenTargetChoice(event.detail);
   }
 
-  function showFolderOpenDialog(folderPath: string) {
-    folderOpenDialogName = folderPath;
-    folderOpenDialogPath = folderPath;
+  function getOpenTargetDialogPath(target: OpenTarget | null) {
+    if (!target) return '';
+    return target.kind === 'folder' ? target.path : target.paths.join('\n');
   }
 
-  async function openFolderWithBehavior(folderPath: string) {
-    if (folderOpenDefaultBehavior === 'current-window') {
-      await openFolderInCurrentWindow(folderPath);
-    } else if (folderOpenDefaultBehavior === 'new-window') {
-      await openFolderInNewWindow(folderPath);
-    } else {
-      showFolderOpenDialog(folderPath);
-    }
+  function getOpenTargetDialogName(target: OpenTarget | null) {
+    if (!target) return '';
+    if (target.kind === 'folder') return resolveFolderName(target.path);
+    const firstName = target.paths[0]?.replace(/\\/g, '/').split('/').pop() ?? '';
+    return target.paths.length === 1 ? firstName : `${firstName}…`;
   }
 
   async function openFolderDialog() {
@@ -1872,7 +2097,7 @@
     if (!(await ensureExplorerPathExists(path, t.fileMissing()))) {
       return;
     }
-    await openRecentFile(path);
+    await openTargetWithBehavior({ kind: 'documents', paths: [path] });
   }
 
   async function clearRecentEntriesList() {
@@ -2363,26 +2588,78 @@
     }, 2000);
   }
 
-  function persistEditorModePreference(nextMode: EditorMode) {
+  function persistEditorModePreference(nextMode: EditorViewMode) {
+    preferredEditorMode = nextMode;
     updateAppSetting('editorMode', nextMode).catch(() => undefined);
   }
 
-  async function changeEditorMode(nextMode: EditorMode, persistPreference: boolean) {
+  function notifyModePaneReady(nextMode: EditorViewMode, generation: number) {
+    const editorGrid =
+      sourcePane?.closest<HTMLElement>('.editor-grid') ??
+      semanticPane?.closest<HTMLElement>('.editor-grid');
+    editorGrid?.dispatchEvent(
+      new CustomEvent('nomo:mode-pane-ready', {
+        detail: { mode: nextMode, generation },
+      }),
+    );
+  }
+
+  async function changeEditorMode(nextMode: EditorViewMode, persistPreference: boolean) {
     if (isSegmentedTextTab(tabs.find((tab) => tab.id === activeTabId))) {
       return false;
     }
+    if (largeDocumentMode && nextMode !== 'source') {
+      statusMessage = t.largeDocumentStayReadonlySource();
+      return false;
+    }
     cancelPendingReadingPositionRestore();
-    const previousMode = mode;
-    const anchor = getCurrentReadingAnchor(previousMode);
-    saveCurrentReadingPositionToMemoryOnly(previousMode, anchor);
-    await editorInteraction.setMode(nextMode, anchor);
-    if (persistPreference && !(largeDocumentMode && nextMode === 'semantic')) {
+    selectedStats = null;
+    const previousViewMode = mode;
+    const previousActiveMode = getActiveEditorMode();
+    const anchor = getCurrentReadingAnchor(previousActiveMode);
+    saveCurrentReadingPositionToMemoryOnly(previousActiveMode, anchor);
+
+    if (previousViewMode === 'split' && previousActiveMode === 'source') {
+      refreshSplitSemanticView();
+    } else {
+      editor.getMarkdown();
+    }
+    if (nextMode === 'split') {
+      splitActivePane = previousActiveMode;
+    }
+    clearSplitSemanticRefreshTimer();
+    splitSemanticRefreshGeneration += 1;
+    mode = nextMode;
+    try {
+      if (nextMode === 'split' && splitActivePane === 'source') {
+        editor.refreshSemanticView();
+      }
+      const targetCoreMode = nextMode === 'split' ? splitActivePane : getCoreModeForView(nextMode);
+      const modeSwitchResult = await editorInteraction.setMode(
+        targetCoreMode,
+        anchor,
+        true,
+        nextMode,
+      );
+      if (modeSwitchResult.status === 'superseded' || mode !== nextMode) {
+        return false;
+      }
+
+      notifyModePaneReady(nextMode, modeSwitchResult.generation);
+    } catch (error) {
+      await tick();
+      if (mode === nextMode) {
+        notifyModePaneReady(nextMode, -1);
+      }
+      throw error;
+    }
+    if (persistPreference) {
       persistEditorModePreference(nextMode);
     }
     return true;
   }
 
-  function setMode(nextMode: EditorMode) {
+  function setMode(nextMode: EditorViewMode) {
     if (markdownMiniActive) return;
     void changeEditorMode(nextMode, true).catch(() => undefined);
   }
@@ -2411,6 +2688,10 @@
 
   function toggleToolbar() {
     setToolbarHidden(!toolbarHidden);
+  }
+
+  function toggleSplitAlignmentGuide() {
+    splitAlignmentGuideVisible = !splitAlignmentGuideVisible;
   }
 
   function setOutlineVisiblePreference(visible: boolean) {
@@ -2572,7 +2853,13 @@
     return [
       { label: t.cut(), icon: 'cut', disabled, shortcut: 'Ctrl+X', action: cutSelection },
       { label: t.copy(), icon: 'copy', shortcut: 'Ctrl+C', action: copySelection },
-      { label: t.paste(), icon: 'paste', disabled, shortcut: 'Ctrl+V', action: pasteFromContextMenu },
+      {
+        label: t.paste(),
+        icon: 'paste',
+        disabled,
+        shortcut: 'Ctrl+V',
+        action: pasteFromContextMenu,
+      },
       {
         label: t.pasteAsPlainText(),
         icon: 'paste',
@@ -2586,12 +2873,30 @@
         icon: 'format',
         disabled,
         children: [
-          { ...commandMenuItem(t.bold(), { type: 'toggleBold' }, 'format', 'Ctrl+B'), active: pendingInlineMarks.strong },
-          { ...commandMenuItem(t.italic(), { type: 'toggleItalic' }, 'format', 'Ctrl+I'), active: pendingInlineMarks.em },
-          { ...commandMenuItem(t.underline(), { type: 'toggleUnderline' }, 'format', 'Ctrl+U'), active: pendingInlineMarks.underline },
-          { ...commandMenuItem(t.strikethrough(), { type: 'toggleStrikethrough' }, 'format'), active: pendingInlineMarks.strikethrough },
-          { ...commandMenuItem(t.inlineCode(), { type: 'toggleCode' }, 'code', 'Ctrl+`'), active: pendingInlineMarks.code },
-          { ...commandMenuItem(t.highlight(), { type: 'toggleHighlight' }, 'format'), active: pendingInlineMarks.highlight },
+          {
+            ...commandMenuItem(t.bold(), { type: 'toggleBold' }, 'format', 'Ctrl+B'),
+            active: pendingInlineMarks.strong,
+          },
+          {
+            ...commandMenuItem(t.italic(), { type: 'toggleItalic' }, 'format', 'Ctrl+I'),
+            active: pendingInlineMarks.em,
+          },
+          {
+            ...commandMenuItem(t.underline(), { type: 'toggleUnderline' }, 'format', 'Ctrl+U'),
+            active: pendingInlineMarks.underline,
+          },
+          {
+            ...commandMenuItem(t.strikethrough(), { type: 'toggleStrikethrough' }, 'format'),
+            active: pendingInlineMarks.strikethrough,
+          },
+          {
+            ...commandMenuItem(t.inlineCode(), { type: 'toggleCode' }, 'code', 'Ctrl+`'),
+            active: pendingInlineMarks.code,
+          },
+          {
+            ...commandMenuItem(t.highlight(), { type: 'toggleHighlight' }, 'format'),
+            active: pendingInlineMarks.highlight,
+          },
           menuSeparator(),
           commandMenuItem(t.clearStyle(), { type: 'clearInlineStyles' }, 'format'),
         ],
@@ -2605,7 +2910,12 @@
       },
       commandMenuItem(t.insertInlineComment(), { type: 'insertCommentInline' }, 'edit'),
       menuSeparator(),
-      { label: t.selectAll(), icon: 'select-all', shortcut: 'Ctrl+A', action: () => editor.selectAll() },
+      {
+        label: t.selectAll(),
+        icon: 'select-all',
+        shortcut: 'Ctrl+A',
+        action: () => editor.selectAll(),
+      },
       { label: t.find(), icon: 'search', shortcut: 'Ctrl+F', action: () => openSearchPanel(false) },
     ];
   }
@@ -2614,8 +2924,19 @@
     const disabled = readonlyDocumentMode;
     return [
       commandMenuItem(t.undo(), { type: 'undo' }, 'undo', 'Ctrl+Z'),
-      commandMenuItem(t.redo(), { type: 'redo' }, 'redo', getPlatformCapabilities().isMac ? 'Ctrl+Shift+Z' : 'Ctrl+Y'),
-      { label: t.paste(), icon: 'paste', disabled, shortcut: 'Ctrl+V', action: pasteFromContextMenu },
+      commandMenuItem(
+        t.redo(),
+        { type: 'redo' },
+        'redo',
+        getPlatformCapabilities().isMac ? 'Ctrl+Shift+Z' : 'Ctrl+Y',
+      ),
+      {
+        label: t.paste(),
+        icon: 'paste',
+        disabled,
+        shortcut: 'Ctrl+V',
+        action: pasteFromContextMenu,
+      },
       {
         label: t.pasteAsPlainText(),
         icon: 'paste',
@@ -2626,14 +2947,24 @@
       menuSeparator(),
       { label: t.insert(), icon: 'insert', disabled, children: buildInsertContextMenuItems() },
       menuSeparator(),
-      { label: t.selectAll(), icon: 'select-all', shortcut: 'Ctrl+A', action: () => editor.selectAll() },
+      {
+        label: t.selectAll(),
+        icon: 'select-all',
+        shortcut: 'Ctrl+A',
+        action: () => editor.selectAll(),
+      },
       { label: t.find(), icon: 'search', shortcut: 'Ctrl+F', action: () => openSearchPanel(false) },
     ];
   }
 
   function buildInsertContextMenuItems(): ContextMenuItem[] {
     const headings: ContextMenuItem[] = ([1, 2, 3, 4, 5, 6] as const).map((level) =>
-      commandMenuItem(t.headingLevel({ level }), { type: 'setHeading', level }, 'heading', `Ctrl+${level}`),
+      commandMenuItem(
+        t.headingLevel({ level }),
+        { type: 'setHeading', level },
+        'heading',
+        `Ctrl+${level}`,
+      ),
     );
     return [
       ...headings,
@@ -2660,7 +2991,11 @@
 
   function buildLinkContextMenuItems(target: ContextMenuTarget): ContextMenuItem[] {
     return [
-      { label: t.openLink(), icon: 'open', action: () => target.href && openLinkFromEditor(target.href) },
+      {
+        label: t.openLink(),
+        icon: 'open',
+        action: () => target.href && openLinkFromEditor(target.href),
+      },
       { label: t.editLink(), icon: 'edit', disabled: readonlyDocumentMode, action: openLinkPicker },
       { label: t.copyLinkAddress(), icon: 'copy', action: () => copyPlainText(target.href ?? '') },
       menuSeparator(),
@@ -2684,14 +3019,35 @@
 
   function buildCodeBlockContextMenuItems(target: ContextMenuTarget): ContextMenuItem[] {
     return [
-      { label: t.editCode(), icon: 'edit', disabled: readonlyDocumentMode, action: () => editor.editContextTarget(target) },
+      {
+        label: t.editCode(),
+        icon: 'edit',
+        disabled: readonlyDocumentMode,
+        action: () => editor.editContextTarget(target),
+      },
       { label: t.copyCode(), icon: 'copy', action: () => copyPlainText(target.text ?? '') },
-      { label: t.selectLanguage(), icon: 'code', disabled: readonlyDocumentMode, action: () => editor.chooseContextTargetLanguage(target) },
-      { label: t.convertToParagraph(), icon: 'format', disabled: readonlyDocumentMode, action: () => {
-        if (editor.selectContextTarget(target)) runCommand({ type: 'insertCodeBlock' });
-      } },
+      {
+        label: t.selectLanguage(),
+        icon: 'code',
+        disabled: readonlyDocumentMode,
+        action: () => editor.chooseContextTargetLanguage(target),
+      },
+      {
+        label: t.convertToParagraph(),
+        icon: 'format',
+        disabled: readonlyDocumentMode,
+        action: () => {
+          if (editor.selectContextTarget(target)) runCommand({ type: 'insertCodeBlock' });
+        },
+      },
       menuSeparator(),
-      { label: t.deleteAction(), icon: 'delete', danger: true, disabled: readonlyDocumentMode, action: () => editor.deleteContextTarget(target) },
+      {
+        label: t.deleteAction(),
+        icon: 'delete',
+        danger: true,
+        disabled: readonlyDocumentMode,
+        action: () => editor.deleteContextTarget(target),
+      },
     ];
   }
 
@@ -2702,9 +3058,21 @@
       commandMenuItem(t.addColumnBefore(), { type: 'addTableColumnBefore' }, 'table'),
       commandMenuItem(t.addColumnAfter(), { type: 'addTableColumnAfter' }, 'table'),
       menuSeparator(),
-      commandMenuItem(t.alignLeft(), { type: 'setTableColumnAlignment', align: 'left' }, 'align-left'),
-      commandMenuItem(t.alignCenter(), { type: 'setTableColumnAlignment', align: 'center' }, 'align-center'),
-      commandMenuItem(t.alignRight(), { type: 'setTableColumnAlignment', align: 'right' }, 'align-right'),
+      commandMenuItem(
+        t.alignLeft(),
+        { type: 'setTableColumnAlignment', align: 'left' },
+        'align-left',
+      ),
+      commandMenuItem(
+        t.alignCenter(),
+        { type: 'setTableColumnAlignment', align: 'center' },
+        'align-center',
+      ),
+      commandMenuItem(
+        t.alignRight(),
+        { type: 'setTableColumnAlignment', align: 'right' },
+        'align-right',
+      ),
       commandMenuItem(t.toggleTableHeader(), { type: 'toggleTableHeader' }, 'table'),
       menuSeparator(),
       commandMenuItem(t.deleteRow(), { type: 'deleteTableRow' }, 'delete'),
@@ -2716,10 +3084,25 @@
   function buildRenderedBlockContextMenuItems(target: ContextMenuTarget): ContextMenuItem[] {
     const isMermaid = target.kind === 'mermaid-block';
     return [
-      { label: isMermaid ? t.editDiagramSource() : t.editFormulaSource(), icon: 'edit', disabled: readonlyDocumentMode, action: () => editor.editContextTarget(target) },
-      { label: isMermaid ? t.copyDiagramSource() : t.copyFormulaSource(), icon: 'copy', action: () => copyPlainText(target.text ?? '') },
+      {
+        label: isMermaid ? t.editDiagramSource() : t.editFormulaSource(),
+        icon: 'edit',
+        disabled: readonlyDocumentMode,
+        action: () => editor.editContextTarget(target),
+      },
+      {
+        label: isMermaid ? t.copyDiagramSource() : t.copyFormulaSource(),
+        icon: 'copy',
+        action: () => copyPlainText(target.text ?? ''),
+      },
       menuSeparator(),
-      { label: t.deleteAction(), icon: 'delete', danger: true, disabled: readonlyDocumentMode, action: () => editor.deleteContextTarget(target) },
+      {
+        label: t.deleteAction(),
+        icon: 'delete',
+        danger: true,
+        disabled: readonlyDocumentMode,
+        action: () => editor.deleteContextTarget(target),
+      },
     ];
   }
 
@@ -2814,26 +3197,47 @@
   }
 
   function handleWorkspaceContextMenu(event: MouseEvent) {
-    if (mode !== 'semantic') return;
+    if (getActiveEditorMode() !== 'semantic') return;
     event.preventDefault();
     openApplicationContextMenu({
       x: event.clientX,
       y: event.clientY,
       items: [
-        { label: outlineVisible ? t.hideOutline() : t.showOutline(), icon: 'outline', active: outlineVisible, action: toggleOutlineVisible },
-        { label: toolbarHidden ? t.showToolbar() : t.hideToolbar(), icon: 'toolbar', active: !toolbarHidden, action: toggleToolbar },
-        { label: focusMode ? t.exitFocusMode() : t.enterFocusMode(), icon: 'focus', active: focusMode, action: toggleFocusMode },
+        {
+          label: outlineVisible ? t.hideOutline() : t.showOutline(),
+          icon: 'outline',
+          active: outlineVisible,
+          action: toggleOutlineVisible,
+        },
+        {
+          label: toolbarHidden ? t.showToolbar() : t.hideToolbar(),
+          icon: 'toolbar',
+          active: !toolbarHidden,
+          action: toggleToolbar,
+        },
+        {
+          label: focusMode ? t.exitFocusMode() : t.enterFocusMode(),
+          icon: 'focus',
+          active: focusMode,
+          action: toggleFocusMode,
+        },
         menuSeparator(),
         {
-          label: t.contentWidth(),
+          label: mode === 'split' ? t.splitAdaptiveWidth() : t.contentWidth(),
           icon: 'width',
+          disabled: mode === 'split',
           children: [45, 60, 75, 90].map((value) => ({
             label: `${value}%`,
             active: contentWidthPercent === value,
             action: () => editorSettings.updateContentWidthValue(value),
           })),
         },
-        { label: t.resetZoom(), icon: 'zoom', disabled: zoomPercent === 100, action: () => handleZoomChange(100) },
+        {
+          label: t.resetZoom(),
+          icon: 'zoom',
+          disabled: zoomPercent === 100,
+          action: () => handleZoomChange(100),
+        },
       ],
     });
   }
@@ -2857,17 +3261,28 @@
 
   const editor = createEditorCore({
     markdown,
-    mode,
+    mode: getCoreModeForView(mode),
     inlineCodeRenderingEnabled,
     copyMarkdownSyntaxEnabled,
     theme: initialResolvedTheme.editorTheme,
     onChange: syncFromEditor,
+    onSelectionChange: handleSemanticSelectionChange,
     onLinkShortcut: () => openLinkPicker(),
     onOpenLink: (href) => openLinkFromEditor(href),
     getImageContext: () => getImageContext(),
     onImagesDeleted: (event) => handleDeletedImageResources(event),
     onContextMenuOpen: handleContextMenuOpen,
   });
+
+  function handleSemanticSelectionChange(event: EditorSelectionEvent) {
+    if (getActiveEditorMode() !== 'semantic') return;
+    selectedStats = event.selection ? calculateDocumentStats(event.selectedMarkdown) : null;
+  }
+
+  function handleSourceSelectionChange(selectedMarkdown: string) {
+    if (getActiveEditorMode() !== 'source') return;
+    selectedStats = selectedMarkdown ? calculateDocumentStats(selectedMarkdown) : null;
+  }
 
   function openSearchPanel(replaceVisible = false) {
     if (isSegmentedTextTab(tabs.find((tab) => tab.id === activeTabId))) {
@@ -2890,17 +3305,17 @@
     const activeMatch = searchMatches[searchActiveIndex];
     searchPanelOpen = false;
     clearSearchDebounceTimer();
-    if (mode === 'source') {
+    if (getActiveEditorMode() === 'source') {
       editor.setSearchHighlights([], 0);
       if (
-        sourceTextarea &&
+        sourceEditor &&
         activeMatch &&
-        sourceTextarea.selectionStart === activeMatch.from &&
-        sourceTextarea.selectionEnd === activeMatch.to
+        sourceEditor.getSelection().from === activeMatch.from &&
+        sourceEditor.getSelection().to === activeMatch.to
       ) {
-        sourceTextarea.setSelectionRange(activeMatch.to, activeMatch.to);
+        sourceEditor.setSelection(activeMatch.to);
       }
-      sourceTextarea?.focus();
+      sourceEditor?.focus();
     } else {
       if (editor.clearSearchState) {
         editor.clearSearchState(activeMatch);
@@ -2977,9 +3392,9 @@
     const match = searchMatches[searchActiveIndex];
     if (!match) return;
 
-    if (mode === 'source') {
+    if (getActiveEditorMode() === 'source') {
       const nextMarkdown = replaceTextRange(markdown, match, searchReplacement);
-      editor.setMarkdown(nextMarkdown, { reason: 'programmatic-update' });
+      sourceEditor?.setMarkdown(nextMarkdown, { addToHistory: true });
     } else {
       editor.replaceSearchMatch(match, searchReplacement);
     }
@@ -2994,14 +3409,14 @@
     if (readonlyDocumentMode || !searchQuery) return;
     let replaced = 0;
 
-    if (mode === 'source') {
+    if (getActiveEditorMode() === 'source') {
       const result = replaceAllTextMatches(markdown, searchQuery, searchReplacement, {
         caseSensitive: searchCaseSensitive,
         wholeWord: searchWholeWord,
       });
       replaced = result.count;
       if (replaced > 0) {
-        editor.setMarkdown(result.text, { reason: 'programmatic-update' });
+        sourceEditor?.setMarkdown(result.text, { addToHistory: true });
       }
     } else {
       replaced = editor.replaceAllSearchMatches(searchQuery, searchReplacement, {
@@ -3028,7 +3443,7 @@
 
     const previousMatch = searchMatches[searchActiveIndex];
     searchMatches =
-      mode === 'source'
+      getActiveEditorMode() === 'source'
         ? findTextMatches(markdown, searchQuery, {
             caseSensitive: searchCaseSensitive,
             wholeWord: searchWholeWord,
@@ -3055,7 +3470,7 @@
     }
 
     // 更新编辑器搜索高亮 decorations（不依赖 focus 即可显示）
-    if (mode !== 'source') {
+    if (getActiveEditorMode() !== 'source') {
       editor.setSearchHighlights(searchMatches, searchActiveIndex);
     } else {
       editor.setSearchHighlights([], 0);
@@ -3098,7 +3513,7 @@
     const searchCursorEnd = activeSearchInput?.selectionEnd ?? null;
 
     // 总是 focus 编辑器，让 scrollIntoView 和 selection 高亮生效
-    if (mode === 'source') {
+    if (getActiveEditorMode() === 'source') {
       await selectSourceSearchMatch(match, true);
     } else {
       editor.selectSearchMatch(match, true);
@@ -3117,14 +3532,11 @@
 
   async function selectSourceSearchMatch(match: EditorSearchMatch, focusEditor = true) {
     await tick();
-    if (!sourceTextarea) return;
+    if (!sourceEditor) return;
     if (focusEditor) {
-      sourceTextarea.focus();
+      sourceEditor.focus();
     }
-    sourceTextarea.setSelectionRange(match.from, match.to);
-    const lineHeight = getSourceLineHeight();
-    const line = markdown.slice(0, match.from).split('\n').length - 1;
-    setScrollTop(sourcePane, Math.max(0, line * lineHeight - sourcePane.clientHeight / 2));
+    sourceEditor.revealRange(match.from, match.to);
     await waitForAnimationFrame();
   }
 
@@ -3178,8 +3590,34 @@
     openSettingsWindow(desktopEnabled);
   }
 
+  function openPreviewFile(path: string) {
+    return enqueueOpenTargetOperation(() => routePreviewFile(path));
+  }
+
+  async function routePreviewFile(path: string) {
+    if (!desktopEnabled) return false;
+    await syncCurrentWindowOpenTargetsNow();
+    const decision = await prepareOpenTargetWindow(
+      desktopEnabled,
+      { kind: 'documents', paths: [path] },
+      false,
+    ).catch((error) => {
+      showVisibleError(error, t.previewOpenFailed());
+      return null;
+    });
+    if (!decision || decision.action === 'handled') return false;
+    if (decision.action === 'activate-current') {
+      if (decision.target.kind !== 'documents' || decision.target.paths.length === 0) return false;
+      await openPreviewFileInCurrentWindow(decision.target.paths[0]);
+      return true;
+    }
+    if (decision.target.kind !== 'documents' || decision.target.paths.length === 0) return false;
+    await openPreviewFileInCurrentWindow(decision.target.paths[0]);
+    return true;
+  }
+
   // 打开预览标签页（文件树单击）
-  async function openPreviewFile(path: string) {
+  async function openPreviewFileInCurrentWindow(path: string) {
     if (!desktopEnabled) return;
     const requestGeneration = invalidatePendingPreviewOpen();
     if (!(await ensureExplorerPathExists(path, t.fileMissing()))) {
@@ -3511,6 +3949,7 @@
     getCurrentFolderPath: () => currentFolderPath,
     getFileInput: () => fileInput,
     getEditor: () => editor,
+    beforeMarkdownCommit: flushActiveEditorView,
     getTabs: () => tabs,
     setTabs: (value) => {
       tabs = value;
@@ -3541,7 +3980,7 @@
     expandAncestors,
   });
   const outlineInteraction = createOutlineInteractionController({
-    getMode: () => mode,
+    getMode: () => getActiveEditorMode(),
     getMarkdown: () => markdown,
     getOutline: () => outline,
     getCollapsedOutlineIds: () => collapsedOutlineIds,
@@ -3561,26 +4000,35 @@
     },
     getSemanticPane: () => semanticPane,
     getSourcePane: () => sourcePane,
-    getSourceTextarea: () => sourceTextarea,
+    getSourceEditor: () => sourceEditor,
     getEditor: () => editor,
     getReadonly: () => readonlyDocumentMode,
     setStatusMessage: (value) => {
       statusMessage = value;
     },
-    onExplicitJumpIntent: cancelPendingReadingPositionRestore,
+    onExplicitJumpIntent: () => {
+      cancelPendingReadingPositionRestore();
+      if (mode === 'split') {
+        semanticPane?.closest('.editor-grid')?.dispatchEvent(new CustomEvent('nomo:scroll-sync-navigation', {
+          detail: { pane: getActiveEditorMode() },
+        }));
+      }
+    },
   });
   const editorInteraction = createEditorInteractionController({
     getEditor: () => editor,
     getLargeDocumentMode: () => largeDocumentMode,
-    getMode: () => mode,
+    getMode: () => getActiveEditorMode(),
+    getSplitView: () => mode === 'split',
     getOutline: () => outline,
     getSemanticPane: () => semanticPane,
     getSourcePane: () => sourcePane,
-    getSourceTextarea: () => sourceTextarea,
+    getSourceEditor: () => sourceEditor,
     getPendingSourceScrollTop: () => pendingSourceScrollTop,
     setPendingSourceScrollTop: (value) => {
       pendingSourceScrollTop = value;
     },
+    suppressSourceLayoutScroll: () => suppressProgrammaticReadingScroll('source'),
     setSuppressOutlineScrollUntil: (value) => {
       suppressOutlineScrollUntil = value;
     },
@@ -3591,10 +4039,10 @@
   });
   const imageInsertion = createImageInsertionHandlers({
     getEditor: () => editor,
-    getMode: () => mode,
+    getMode: () => getActiveEditorMode(),
     getFileName: () => fileName,
     getNativePath: () => nativePath,
-    getSourceTextarea: () => sourceTextarea,
+    getSourceEditor: () => sourceEditor,
     getImageContext: () => getImageContext(),
     saveMarkdownFile: (saveAs) => saveMarkdownFile(saveAs),
     setMarkdown: (value) => editor.setMarkdown(value),
@@ -3605,7 +4053,10 @@
   });
   const handleEditorDrop = imageInsertion.handleEditorDrop;
   const handleEditorPaste = imageInsertion.handleEditorPaste;
-  const updateMarkdown = editorInteraction.updateMarkdown;
+  function updateMarkdown(nextMarkdown: string) {
+    editorInteraction.updateMarkdown(nextMarkdown);
+    scheduleSplitSemanticRefresh();
+  }
   const runMarkdownCommand = editorInteraction.runCommand;
   function runCommand(command: EditorCommand) {
     const activeTab = tabs.find((tab) => tab.id === activeTabId);
@@ -3692,7 +4143,9 @@
           writeBootSnapshot: options.writeBootSnapshot,
         });
       } else if (options.writeBootSnapshot) {
-        writeThemeBootSnapshot(resolveTheme(getCurrentAppearancePreferences(), options.systemScheme));
+        writeThemeBootSnapshot(
+          resolveTheme(getCurrentAppearancePreferences(), options.systemScheme),
+        );
       }
       return;
     }
@@ -3843,15 +4296,12 @@
     }
     const path = await pickDocumentPathWithDialog();
     if (!path) return;
-    await openDocumentPath(path, {
-      message: t.openedByTauri(),
-      fallbackMessage: t.openFileFailed(),
-    }).catch((error) => {
+    await openTargetWithBehavior({ kind: 'documents', paths: [path] }).catch((error) => {
       showVisibleError(error, t.openFileFailed());
     });
   }
 
-  async function openRecentFile(path: string) {
+  async function openFilePathInCurrentWindow(path: string) {
     if (!desktopEnabled) return;
     await openDocumentPath(path, {
       message: t.recentFileOpened(),
@@ -4510,7 +4960,7 @@
       if (result) {
         await loadFolder(currentFolderPath);
         expandAncestors(targetPath, currentFolderPath);
-        openRecentEntry(targetPath, 'file');
+        openFilePathInCurrentWindow(targetPath);
       }
     }
   }
@@ -4586,8 +5036,11 @@
     fontSize = preferences.fontSize;
     lineHeight = preferences.lineHeight;
     contentWidthPercent = preferences.contentWidthPercent;
+    preferredEditorMode = preferences.editorMode;
+    splitViewLayout = preferences.splitViewLayout;
+    splitLeftPercent = preferences.splitLeftPercent;
     imageSettings = preferences.imageHandlingSettings;
-    folderOpenDefaultBehavior = preferences.folderOpenDefaultBehavior;
+    openDefaultBehavior = preferences.openDefaultBehavior;
     filePreviewEnabled = preferences.filePreviewEnabled;
     closeWindowBehavior = preferences.closeWindowBehavior;
     externalFileChangeBehavior = preferences.externalFileChangeBehavior;
@@ -4639,7 +5092,8 @@
     if (!shouldBeLargeDocument && largeDocumentMode) {
       largeDocumentMode = false;
       readonlyDocumentMode = false;
-      editor.updateOptions({ mode });
+      mode = preferredEditorMode;
+      editor.updateOptions({ mode: getCoreModeForView(mode) });
     } else if (shouldBeLargeDocument && !largeDocumentMode) {
       largeDocumentMode = true;
       readonlyDocumentMode = true;
@@ -4650,7 +5104,7 @@
 
     if (options.applyEditorMode && !largeDocumentMode) {
       mode = preferences.editorMode;
-      editor.updateOptions({ mode: preferences.editorMode });
+      editor.updateOptions({ mode: getCoreModeForView(preferences.editorMode) });
     }
 
     if (preferences.developerMode) {
@@ -4668,7 +5122,9 @@
       colorThemeId,
       documentStyleId,
       interfaceLanguage,
-      editorMode: mode,
+      editorMode: preferredEditorMode,
+      splitViewLayout,
+      splitLeftPercent,
       autoSaveEnabled,
       autoSaveDelayMs,
       createSnapshotBeforeSave,
@@ -4676,7 +5132,7 @@
       lineHeight,
       contentWidthPercent,
       largeDocumentLimit,
-      folderOpenDefaultBehavior,
+      openDefaultBehavior,
       filePreviewEnabled,
       closeWindowBehavior,
       externalFileChangeBehavior,
@@ -4718,8 +5174,7 @@
     const appearanceOnly =
       patchKeys.length > 0 &&
       patchKeys.every(
-        (key) =>
-          key === 'themeMode' || key === 'colorThemeId' || key === 'documentStyleId',
+        (key) => key === 'themeMode' || key === 'colorThemeId' || key === 'documentStyleId',
       );
 
     if (appearanceOnly) {
@@ -4880,7 +5335,7 @@
     try {
       desktopEnabled = isTauriRuntime();
       window.addEventListener('wheel', handleGlobalWheel, { capture: true, passive: false });
-      let persistedEditorMode: EditorMode | null = null;
+      let persistedEditorMode: EditorViewMode | null = null;
       let settings: Awaited<ReturnType<typeof listAppSettings>> = [];
       let restoredWorkspaceTabs = false;
       let hasPendingFolder = false;
@@ -4995,8 +5450,9 @@
       }
 
       if (persistedEditorMode && !largeDocumentMode) {
+        preferredEditorMode = persistedEditorMode;
         mode = persistedEditorMode;
-        editor.updateOptions({ mode: persistedEditorMode });
+        editor.updateOptions({ mode: getCoreModeForView(persistedEditorMode) });
       }
       await setupDesktopEvents();
       await refreshRecentFiles();
@@ -5045,6 +5501,7 @@
   });
 
   onDestroy(() => {
+    resolveOpenTargetChoice(null);
     appearanceRuntimeActive = false;
     cancelPendingReadingPositionRestore();
     clearReadingPositionSaveTimer();
@@ -5063,6 +5520,7 @@
     if (toastTimer !== null) window.clearTimeout(toastTimer);
     if (linkOpeningTimer !== null) window.clearTimeout(linkOpeningTimer);
     if (softwareUpdateStartupTimer !== null) window.clearTimeout(softwareUpdateStartupTimer);
+    clearSplitSemanticRefreshTimer();
     clearContentAnalysisTimer();
     clearSearchDebounceTimer();
     window.removeEventListener('keydown', handleGlobalShortcut);
@@ -5084,6 +5542,9 @@
       return;
     }
     const markdownChanged = event.markdown !== markdown;
+    if (markdownChanged) {
+      selectedStats = null;
+    }
 
     // 预览标签页开始编辑 → 自动固定
     if (markdownChanged && previewTabId && previewTabId === activeTabId && event.dirty) {
@@ -5099,7 +5560,6 @@
       savedMarkdown = event.markdown;
     }
     version = event.version;
-    mode = event.mode;
     pendingInlineMarks = event.pendingInlineMarks;
 
     activeTab.dirty = dirty;
@@ -5219,7 +5679,7 @@
       statusMessage = t.readonlyCannotEditLink();
       return;
     }
-    if (mode !== 'semantic') {
+    if (getActiveEditorMode() !== 'semantic') {
       statusMessage = t.switchSemanticBeforeEditLink();
       return;
     }
@@ -5665,8 +6125,8 @@
     }
 
     const supportedPaths = paths.filter((path) => /\.(md|markdown|txt|json)$/i.test(path));
-    for (const path of supportedPaths) {
-      await openRecentEntry(path, 'file');
+    if (supportedPaths.length > 0) {
+      await openTargetWithBehavior({ kind: 'documents', paths: supportedPaths });
     }
   }
 
@@ -5695,7 +6155,7 @@
     }
 
     for (const path of supportedPaths) {
-      await openRecentFile(path);
+      await openFilePathInCurrentWindow(path);
     }
   }
 
@@ -5762,7 +6222,7 @@
   }
 
   function syncZoomFrameViewportLayout(pane?: HTMLElement) {
-    const visiblePane = pane ?? (mode === 'source' ? sourcePane : semanticPane);
+    const visiblePane = pane ?? (getActiveEditorMode() === 'source' ? sourcePane : semanticPane);
     visiblePane?.dispatchEvent(new Event('nomo:editor-viewport-layout-refresh'));
   }
 
@@ -5770,7 +6230,9 @@
   // 记录指向元素内的相对位置，每帧用元素的新几何位置校正滚动，
   // 避免按整页 scrollHeight 比例缩放时视角逐步向下漂移。
   function saveScrollAnchor(clientX?: number, clientY?: number): ZoomScrollAnchor | null {
-    const pane = mode === 'source' ? sourcePane : semanticPane;
+    // 双栏只重测并更新跟随栏，缩放动画不能恢复旧主栏位置、覆盖新的滚动意图。
+    if (mode === 'split') return null;
+    const pane = getActiveEditorMode() === 'source' ? sourcePane : semanticPane;
     if (!pane) return null;
 
     const paneRect = pane.getBoundingClientRect();
@@ -5926,8 +6388,9 @@
   bind:fileInput
   bind:sourcePane
   bind:semanticPane
-  bind:sourceTextarea
+  bind:sourceEditor
   bind:editorHost
+  editorCore={editor}
   {focusMode}
   {toolbarHidden}
   toolbarShortcut={shortcutPreferences['toggle-toolbar']}
@@ -5944,6 +6407,10 @@
   {recentFiles}
   {missingRecentPaths}
   {mode}
+  {splitViewLayout}
+  {splitLeftPercent}
+  {splitActivePane}
+  {splitAlignmentGuideVisible}
   {outlineVisible}
   {currentFolderPath}
   {rootFolderExpanded}
@@ -5958,6 +6425,7 @@
   {activeTabId}
   {previewTabId}
   {markdown}
+  sourceDocumentId={activeTabId}
   {largeDocumentMode}
   {frontMatter}
   {frontMatterEditing}
@@ -5968,7 +6436,7 @@
   {activeOutlineId}
   {collapsedOutlineIds}
   {visibleOutlineIds}
-  {stats}
+  stats={effectiveStats}
   {writingStatsVisible}
   {writingStatsMetric}
   {readingTimeVisible}
@@ -6044,6 +6512,9 @@
   {removeLink}
   {insertTableWithSize}
   {setMode}
+  {setSplitActivePane}
+  {updateSplitLeftPercent}
+  {toggleSplitAlignmentGuide}
   {toggleOutlineVisible}
   {toggleFocusMode}
   {toggleToolbar}
@@ -6081,6 +6552,7 @@
   {openMarkdownFile}
   {openSettings}
   {setWritingStatsMetric}
+  onSourceSelectionChange={handleSourceSelectionChange}
   {retryMarkdownLint}
   onMarkdownLintIssueSelect={revealMarkdownLintIssue}
   onZoomChange={handleZoomChange}
@@ -6139,14 +6611,11 @@
 
 <FolderOpenDialog
   {interfaceLocale}
-  open={folderOpenDialogPath !== null}
-  folderPath={folderOpenDialogPath ?? ''}
-  folderName={resolveFolderName(folderOpenDialogPath ?? '')}
-  on:choose={handleFolderOpenChoice}
-  on:cancel={() => {
-    folderOpenDialogPath = null;
-    folderOpenDialogName = '';
-  }}
+  open={pendingOpenChoice !== null}
+  targetPath={getOpenTargetDialogPath(pendingOpenChoice)}
+  targetName={getOpenTargetDialogName(pendingOpenChoice)}
+  on:choose={handleOpenTargetChoice}
+  on:cancel={() => resolveOpenTargetChoice(null)}
 />
 
 {#if contextMenuOpen}

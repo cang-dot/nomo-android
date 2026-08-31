@@ -3,10 +3,10 @@
   import type { SoftwareUpdateSnapshot } from '../../lib/desktop/tauriUpdater';
   import type {
     EditorCommand,
-    EditorMode,
     EditorThemeOptions,
     InlinePendingMarks,
     ContextMenuRequest,
+    EditorCore,
   } from '../../lib/editor-core';
   import type { FrontMatterBlock } from '../../lib/markdown/frontMatter';
   import type { DocumentStats, OutlineItem } from '../../lib/outline/outlineService';
@@ -17,8 +17,16 @@
   } from '../../lib/markdown-lint/types';
   import { ChevronDown } from '@lucide/svelte';
   import { onDestroy } from 'svelte';
-  import type { ExternalFileChangeState, FileTreeNode, Tab } from '../types';
+  import type {
+    EditorViewMode,
+    ExternalFileChangeState,
+    FileTreeNode,
+    SplitActivePane,
+    SplitViewLayout,
+    Tab,
+  } from '../types';
   import AppTitleBar from './AppTitleBar.svelte';
+  import type { MarkdownSourceEditorHandle } from './markdownSourceEditor';
   import DocumentTabs from './DocumentTabs.svelte';
   import MobileDocumentsSidebar from './MobileDocumentsSidebar.svelte';
   import EmptyWorkspace from './EmptyWorkspace.svelte';
@@ -38,7 +46,7 @@
   import { t, type EffectiveInterfaceLocale } from '../i18n';
   import { suppressUnhandledContextMenu } from '../services/contextMenuPolicy';
 
-  type StatsMetric = 'lines' | 'words' | 'chars';
+  type StatsMetric = 'lines' | 'words' | 'visibleChars' | 'chars';
   type AppBootState = 'booting' | 'restoring-workspace' | 'opening-file' | 'ready';
 
   export let interfaceLocale: EffectiveInterfaceLocale;
@@ -54,15 +62,20 @@
   export let fileInput: HTMLInputElement;
   export let sourcePane: HTMLElement;
   export let semanticPane: HTMLElement;
-  export let sourceTextarea: HTMLTextAreaElement;
+  export let sourceEditor: MarkdownSourceEditorHandle;
   export let editorHost: HTMLDivElement;
+  export let editorCore: EditorCore;
   export let theme: 'light' | 'dark';
   export let editorTheme: EditorThemeOptions;
   export let desktopEnabled: boolean;
   export let activeMenu: string | null;
   export let recentFiles: RecentEntry[];
   export let missingRecentPaths: Set<string>;
-  export let mode: EditorMode;
+  export let mode: EditorViewMode;
+  export let splitViewLayout: SplitViewLayout;
+  export let splitLeftPercent: number;
+  export let splitActivePane: SplitActivePane;
+  export let splitAlignmentGuideVisible: boolean;
   export let outlineVisible: boolean;
   export let currentFolderPath: string;
   export let rootFolderExpanded: boolean;
@@ -77,6 +90,7 @@
   export let activeTabId: string;
   export let previewTabId: string | null;
   export let markdown: string;
+  export let sourceDocumentId: string;
   export let largeDocumentMode: boolean;
   export let frontMatter: FrontMatterBlock | null;
   export let frontMatterEditing: boolean;
@@ -128,7 +142,7 @@
   export let openFileDialog: () => void;
   export let openFolderDialog: () => void;
   export let openRecentEntry: (path: string, entryType: 'file' | 'folder') => void;
-  export let openPreviewFile: (path: string) => void;
+  export let openPreviewFile: (path: string) => void | boolean | Promise<void | boolean>;
   export let pinPreviewFile: () => void;
   export let clearRecentEntriesList: () => void;
   export let removeRecentEntry: (path: string) => void;
@@ -163,7 +177,10 @@
   export let removeLink: () => void;
   export let insertTableWithSize: (rows: number, columns: number) => void;
   export let openSettings: () => void;
-  export let setMode: (mode: EditorMode) => void;
+  export let setMode: (mode: EditorViewMode) => void;
+  export let setSplitActivePane: (pane: SplitActivePane) => void;
+  export let updateSplitLeftPercent: (percent: number, persist: boolean) => void;
+  export let toggleSplitAlignmentGuide: () => void;
   export let toggleOutlineVisible: () => void;
   export let toggleFocusMode: () => void;
   export let toggleToolbar: () => void;
@@ -180,7 +197,8 @@
   export let closeTab: (tabId: string, event?: Event) => void;
   export let pinPreviewTab: () => void;
   export let updateContentWidth: (event: Event) => void;
-  export let updateMarkdown: (event: Event) => void;
+  export let updateMarkdown: (markdown: string) => void;
+  export let onSourceSelectionChange: (selectedMarkdown: string) => void;
   export let enterFrontMatterEdit: () => void;
   export let leaveFrontMatterEdit: () => void;
   export let updateFrontMatterContent: (content: string) => void;
@@ -425,6 +443,7 @@
                 <EditorToolbar
                   {interfaceLocale}
                   {mode}
+                  {largeDocumentMode}
                   {contentWidthPercent}
                   {outlineVisible}
                   {toolbarShortcut}
@@ -437,6 +456,8 @@
                   {insertTableWithSize}
                   {updateContentWidth}
                   {setMode}
+                  {splitAlignmentGuideVisible}
+                  {toggleSplitAlignmentGuide}
                   {toggleOutlineVisible}
                   {toggleToolbar}
                   mobile={isMobileRuntime}
@@ -491,10 +512,16 @@
               {interfaceLocale}
               bind:sourcePane
               bind:semanticPane
-              bind:sourceTextarea
+              bind:sourceEditor
               bind:editorHost
+              {editorCore}
               {mode}
+              {splitViewLayout}
+              {splitLeftPercent}
+              {splitActivePane}
+              {splitAlignmentGuideVisible}
               {markdown}
+              {sourceDocumentId}
               {largeDocumentMode}
               {frontMatter}
               {frontMatterEditing}
@@ -507,6 +534,9 @@
               {collapsedOutlineIds}
               {visibleOutlineIds}
               {updateMarkdown}
+              {setSplitActivePane}
+              {updateSplitLeftPercent}
+              {onSourceSelectionChange}
               {enterFrontMatterEdit}
               {leaveFrontMatterEdit}
               {updateFrontMatterContent}

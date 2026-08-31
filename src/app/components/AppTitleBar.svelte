@@ -18,9 +18,9 @@
     DIAGRAM_TEMPLATES,
     type DiagramType,
     type EditorCommand,
-    type EditorMode,
     type ContextMenuRequest,
   } from '../../lib/editor-core';
+  import type { EditorViewMode } from '../types';
   import { clickOutside } from '../actions/clickOutside';
   import { getPlatformCapabilities } from '../services/platform';
   import { getDiagramTypeLabel, t } from '../i18n';
@@ -32,7 +32,7 @@
   export let activeMenu: string | null;
   export let recentFiles: RecentEntry[];
   export let missingRecentPaths: Set<string>;
-  export let mode: EditorMode;
+  export let mode: EditorViewMode;
   export let focusMode: boolean;
   export let toolbarHidden: boolean;
   export let toolbarShortcut: string;
@@ -65,7 +65,7 @@
   export let openLinkPicker: () => void;
   export let editFrontMatter: () => void;
   export let showUnavailableFeature: (featureName: string) => void;
-  export let setMode: (mode: EditorMode) => void;
+  export let setMode: (mode: EditorViewMode) => void;
   export let toggleOutlineVisible: () => void;
   export let outlineVisible: boolean;
   export let toggleFocusMode: () => void;
@@ -840,9 +840,23 @@
             {#if activeMenu === 'view'}
               <div class="dropdown-menu" use:keepDropdownInViewport>
                 <button
-                  on:click={() =>
-                    finish(() => setMode(mode === 'source' ? 'semantic' : 'source'), 'view')}
-                  >{t.toggleSourceMode()} <span class="shortcut">Ctrl + E</span></button
+                  role="menuitemradio"
+                  aria-checked={mode === 'semantic'}
+                  disabled={largeDocumentMode}
+                  on:click={() => finish(() => setMode('semantic'), 'view')}
+                  >{t.semanticEditing()}</button
+                >
+                <button
+                  role="menuitemradio"
+                  aria-checked={mode === 'source'}
+                  on:click={() => finish(() => setMode('source'), 'view')}
+                  >{t.sourceMode()} <span class="shortcut">Ctrl + E</span></button
+                >
+                <button
+                  role="menuitemradio"
+                  aria-checked={mode === 'split'}
+                  disabled={largeDocumentMode}
+                  on:click={() => finish(() => setMode('split'), 'view')}>{t.splitMode()}</button
                 >
                 <button on:click={() => finish(toggleOutlineVisible, 'view')}
                   >{outlineVisible ? t.hideOutline() : t.showOutline()}</button

@@ -193,6 +193,29 @@ function createCheckIcon(): SVGSVGElement {
   return svg;
 }
 
+function createExpandToggleIcon(expanded: boolean): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '14');
+  svg.setAttribute('height', '14');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.dataset.icon = expanded ? 'chevrons-up' : 'chevrons-down';
+
+  const paths = expanded ? ['m17 11-5-5-5 5', 'm17 18-5-5-5 5'] : ['m7 6 5 5 5-5', 'm7 13 5 5 5-5'];
+  for (const pathData of paths) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', pathData);
+    svg.appendChild(path);
+  }
+
+  return svg;
+}
+
 export class CodeBlockNodeView {
   private static currentTheme: EditorThemeOptions = {
     name: 'light',
@@ -217,6 +240,9 @@ export class CodeBlockNodeView {
   private lineNumbersWrapper: HTMLElement; // 行号内部容器，用于滚动时 translateY
   private codeBody: HTMLElement;
   private codeDisplay: HTMLElement;
+  private expandButton: HTMLButtonElement;
+  private expanded = false;
+  private lineCount = 1;
 
   // 编辑态相关
   private editing = false;
@@ -257,6 +283,24 @@ export class CodeBlockNodeView {
     const actions = document.createElement('div');
     actions.style.display = 'flex';
     actions.style.gap = '6px';
+
+    this.expandButton = document.createElement('button');
+    this.expandButton.type = 'button';
+    this.expandButton.className = 'code-expand-button';
+    this.expandButton.hidden = true;
+    this.expandButton.setAttribute('aria-expanded', 'false');
+    this.updateExpandButtonChrome();
+    this.expandButton.addEventListener('mousedown', (event) => {
+      // 编辑态点击标题栏按钮时保留 textarea 焦点，避免 blur 自动退出编辑。
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    this.expandButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.toggleExpanded();
+    });
+    actions.appendChild(this.expandButton);
 
     const copyBtn = document.createElement('button');
     copyBtn.type = 'button';
@@ -410,6 +454,8 @@ export class CodeBlockNodeView {
   }
 
   private updateLineNumbers(lineCount: number): void {
+    this.lineCount = lineCount;
+    this.updateExpandableState();
     const currentCount = this.lineNumbersWrapper.children.length;
     if (currentCount !== lineCount) {
       this.lineNumbersWrapper.innerHTML = '';
@@ -864,7 +910,49 @@ export class CodeBlockNodeView {
 
   private syncTextareaRows(lineCount: number): void {
     if (!this.textarea) return;
-    this.textarea.rows = Math.min(Math.max(lineCount, MIN_VISIBLE_LINES), MAX_VISIBLE_LINES);
+    const visibleLines = this.expanded ? lineCount : Math.min(lineCount, MAX_VISIBLE_LINES);
+    this.textarea.rows = Math.max(visibleLines, MIN_VISIBLE_LINES);
+  }
+
+  private updateExpandableState(): void {
+    const expandable = this.lineCount > MAX_VISIBLE_LINES;
+    this.expandButton.hidden = !expandable;
+    if (!expandable && this.expanded) {
+      this.expanded = false;
+    }
+    this.applyExpandedState();
+  }
+
+  private toggleExpanded(): void {
+    if (this.lineCount <= MAX_VISIBLE_LINES) return;
+    this.expanded = !this.expanded;
+    this.applyExpandedState();
+    this.syncTextareaRows(this.lineCount);
+    this.resetVerticalCodeScroll();
+  }
+
+  private applyExpandedState(): void {
+    this.dom.classList.toggle('is-expanded', this.expanded);
+    this.expandButton.setAttribute('aria-expanded', String(this.expanded));
+    this.updateExpandButtonChrome();
+  }
+
+  private updateExpandButtonChrome(): void {
+    const label = this.expanded ? t.collapseCodeBlock() : t.expandCodeBlock();
+    this.expandButton.title = label;
+    this.expandButton.setAttribute('aria-label', label);
+    this.expandButton.replaceChildren(createExpandToggleIcon(this.expanded));
+  }
+
+  private resetVerticalCodeScroll(): void {
+    this.codeDisplay.scrollTop = 0;
+    if (this.textarea) {
+      this.textarea.scrollTop = 0;
+    }
+    this.lineNumbersWrapper.style.transform = '';
+    if (this.highlightLayer) {
+      this.highlightLayer.style.transform = `translate(-${this.textarea?.scrollLeft ?? 0}px, 0)`;
+    }
   }
 
   // ---- 语言选择器 ----
@@ -1190,6 +1278,7 @@ export class CodeBlockNodeView {
 
   private updateLocalizedChrome(): void {
     this.langLabel.title = t.chooseLanguage();
+    this.updateExpandButtonChrome();
 
     for (const button of this.dom.querySelectorAll<HTMLButtonElement>('.code-copy-button')) {
       if (button.classList.contains('is-copied')) {

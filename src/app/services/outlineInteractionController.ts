@@ -1,4 +1,5 @@
 import type { EditorCore, EditorMode } from '../../lib/editor-core';
+import type { MarkdownSourceEditorHandle } from '../components/markdownSourceEditor';
 import {
   reorderOutlineSection,
   type OutlineMoveFailureReason,
@@ -34,62 +35,11 @@ interface OutlineInteractionOptions {
   setSuppressOutlineScrollUntil(value: number): void;
   getSemanticPane(): HTMLElement;
   getSourcePane(): HTMLElement;
-  getSourceTextarea(): HTMLTextAreaElement;
+  getSourceEditor(): MarkdownSourceEditorHandle;
   getEditor(): EditorCore;
   getReadonly(): boolean;
   setStatusMessage(value: string): void;
   onExplicitJumpIntent?(): void;
-}
-
-export function replaceTextareaWithNativeUndo(
-  textarea: HTMLTextAreaElement,
-  nextValue: string,
-): boolean {
-  const previousValue = textarea.value;
-  const previousStart = textarea.selectionStart;
-  const previousEnd = textarea.selectionEnd;
-  const replacement = getMinimalTextReplacement(previousValue, nextValue);
-  textarea.focus({ preventScroll: true });
-  textarea.setSelectionRange(replacement.from, replacement.to);
-  let replaced = false;
-  try {
-    replaced =
-      typeof document.execCommand === 'function' &&
-      document.execCommand('insertText', false, replacement.text);
-  } catch {
-    replaced = false;
-  }
-  if (replaced && textarea.value === nextValue) return true;
-
-  if (textarea.value !== previousValue) {
-    try {
-      document.execCommand('undo');
-    } catch {
-      // 下方仍会恢复 textarea 展示值；编辑器状态从未写入。
-    }
-    if (textarea.value !== previousValue) textarea.value = previousValue;
-  }
-  textarea.setSelectionRange(previousStart, previousEnd);
-  return false;
-}
-
-function getMinimalTextReplacement(previousValue: string, nextValue: string) {
-  let from = 0;
-  const maxPrefix = Math.min(previousValue.length, nextValue.length);
-  while (from < maxPrefix && previousValue[from] === nextValue[from]) from += 1;
-
-  let previousEnd = previousValue.length;
-  let nextEnd = nextValue.length;
-  while (
-    previousEnd > from &&
-    nextEnd > from &&
-    previousValue[previousEnd - 1] === nextValue[nextEnd - 1]
-  ) {
-    previousEnd -= 1;
-    nextEnd -= 1;
-  }
-
-  return { from, to: previousEnd, text: nextValue.slice(from, nextEnd) };
 }
 
 export function createOutlineInteractionController(options: OutlineInteractionOptions) {
@@ -144,17 +94,16 @@ export function createOutlineInteractionController(options: OutlineInteractionOp
         return;
       }
 
-      const sourceTextarea = options.getSourceTextarea();
+      const sourceEditor = options.getSourceEditor();
       const sourcePane = options.getSourcePane();
       const selection = getSourceHeadingSelection(options.getMarkdown(), item);
       const restoreScrollTop = sourcePane?.scrollTop ?? 0;
 
-      sourceTextarea.focus({ preventScroll: true });
-      sourceTextarea.setSelectionRange(selection.end, selection.end);
-      const lineHeightPx = getSourceLineHeight();
+      sourceEditor.focus({ preventScroll: true });
+      sourceEditor.setSelection(selection.end);
       if (sourcePane) {
         setScrollTop(sourcePane, restoreScrollTop);
-        smoothScrollElementTo(sourcePane, Math.max(0, (item.line - 1) * lineHeightPx - 40));
+        smoothScrollElementTo(sourcePane, Math.max(0, sourceEditor.getLineTop(item.line) - 40));
       }
     });
   }
@@ -174,23 +123,7 @@ export function createOutlineInteractionController(options: OutlineInteractionOp
     }
 
     if (options.getMode() === 'source') {
-      const textarea = options.getSourceTextarea();
-      let nativeInputObserved = false;
-      const observeNativeInput = () => {
-        nativeInputObserved = true;
-      };
-      textarea.addEventListener('input', observeNativeInput, { once: true });
-      if (!replaceTextareaWithNativeUndo(textarea, result.markdown)) {
-        textarea.removeEventListener('input', observeNativeInput);
-        options.setStatusMessage(t.outlineMoveUndoUnavailable());
-        return false;
-      }
-      textarea.removeEventListener('input', observeNativeInput);
-      if (!nativeInputObserved) {
-        textarea.dispatchEvent(
-          new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText' }),
-        );
-      }
+      options.getSourceEditor().setMarkdown(result.markdown, { addToHistory: true });
       const generation = ++outlineMoveGeneration;
       options.setStatusMessage(
         t.outlineSectionMoved({ title: previousOutline[request.sourceIndex].title }),
@@ -266,7 +199,7 @@ export function createOutlineInteractionController(options: OutlineInteractionOp
         options.getOutline(),
         sourcePane.scrollTop,
         getSourceLineHeight(),
-        options.getSourceTextarea(),
+        options.getSourceEditor(),
         sourcePane,
       ),
     );
@@ -282,7 +215,7 @@ export function createOutlineInteractionController(options: OutlineInteractionOp
   }
 
   function getSourceLineHeight() {
-    return getTextareaLineHeight(options.getSourceTextarea());
+    return getTextareaLineHeight(options.getSourceEditor());
   }
 
   return {

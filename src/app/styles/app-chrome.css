@@ -560,7 +560,7 @@
   --mode-indicator-width: 34px;
   position: relative;
   display: grid;
-  grid-template-columns: repeat(2, 34px);
+  grid-template-columns: repeat(3, 34px);
   flex-shrink: 0;
   padding: 2px;
   border: 1px solid var(--md-editor-border);
@@ -610,6 +610,12 @@
 .toolbar button.active {
   background: var(--md-editor-surface);
   color: var(--md-editor-accent-strong);
+}
+
+.toolbar button:disabled,
+.range-control input:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 .toolbar button:hover {

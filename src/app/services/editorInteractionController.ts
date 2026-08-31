@@ -1,6 +1,7 @@
 import { tick } from 'svelte';
 import type { EditorCommand, EditorCore, EditorMode } from '../../lib/editor-core';
 import type { OutlineItem } from '../../lib/outline/outlineService';
+import type { MarkdownSourceEditorHandle } from '../components/markdownSourceEditor';
 import { createTocBlock } from '../../lib/toc/tocService';
 import { t } from '../i18n';
 import {
@@ -16,27 +17,42 @@ interface EditorInteractionOptions {
   getEditor(): EditorCore;
   getLargeDocumentMode(): boolean;
   getMode(): EditorMode;
+  getSplitView?(): boolean;
   getOutline(): OutlineItem[];
   getSemanticPane(): HTMLElement | undefined;
   getSourcePane(): HTMLElement | undefined;
-  getSourceTextarea(): HTMLTextAreaElement | undefined;
+  getSourceEditor(): MarkdownSourceEditorHandle | undefined;
   getPendingSourceScrollTop(): number | null;
   setPendingSourceScrollTop(value: number | null): void;
+  suppressSourceLayoutScroll?(): void;
   setSuppressOutlineScrollUntil(value: number): void;
   setStatusMessage(value: string): void;
   getSourceLineHeight(): number;
 }
 
+interface EditorModeSwitchResult {
+  status: 'ready' | 'superseded';
+  generation: number;
+  alignmentStatus?: 'aligned' | 'degraded' | 'skipped';
+}
+
 export function createEditorInteractionController(options: EditorInteractionOptions) {
   let pendingSourceCaretLine: number | null = null;
+  let modeSwitchGeneration = 0;
 
-  async function setMode(nextMode: EditorMode, modeSwitchAnchor?: OutlineScrollAnchor | null) {
+  async function setMode(
+    nextMode: EditorMode,
+    modeSwitchAnchor?: OutlineScrollAnchor | null,
+    force = false,
+    targetViewMode?: EditorMode | 'split',
+  ): Promise<EditorModeSwitchResult> {
+    const generation = ++modeSwitchGeneration;
     if (options.getLargeDocumentMode() && nextMode === 'semantic') {
       options.setStatusMessage(t.largeDocumentStayReadonlySource());
-      return;
+      return { status: 'superseded', generation };
     }
-    if (nextMode === options.getMode()) {
-      return;
+    if (!force && nextMode === options.getMode()) {
+      return { status: 'ready', generation };
     }
 
     // 在切换模式前保存两个面板的滚动位置。
@@ -54,26 +70,56 @@ export function createEditorInteractionController(options: EditorInteractionOpti
         : getSourceModeSwitchAnchor(outline, sourcePane, savedSourceScrollTop));
     options.getEditor().updateOptions({ mode: nextMode });
     await tick();
+    if (!targetViewMode) {
+      options.setSuppressOutlineScrollUntil(Date.now() + 300);
+      scheduleAfterFrames(() => {
+        if (generation !== modeSwitchGeneration) return;
+        if (nextMode === 'semantic') {
+          scrollSemanticToAnchor(options.getOutline(), options.getSemanticPane(), scrollAnchor, {
+            behavior: 'instant',
+          });
+          refreshEditorViewportLayout();
+          return;
+        }
+        void restoreSourceScrollAnchorWhenReady(scrollAnchor, generation);
+      }, 2);
+      return { status: 'ready', generation };
+    }
+    const alignmentStatus = await waitForPaneGeometry(targetViewMode, generation);
+    if (generation !== modeSwitchGeneration) {
+      return { status: 'superseded', generation };
+    }
     options.setSuppressOutlineScrollUntil(Date.now() + 300);
 
-    scheduleAfterFrames(() => {
-      if (nextMode === 'semantic') {
-        scrollSemanticToAnchor(options.getOutline(), options.getSemanticPane(), scrollAnchor, {
-          behavior: 'instant',
-        });
-        refreshEditorViewportLayout();
-        return;
+    if (nextMode === 'semantic') {
+      scrollSemanticToAnchor(options.getOutline(), options.getSemanticPane(), scrollAnchor, {
+        behavior: 'instant',
+      });
+      measureEditorViewportLayout(null);
+      await waitForAnimationFrames(1);
+      if (generation !== modeSwitchGeneration) {
+        return { status: 'superseded', generation };
       }
+      scrollSemanticToAnchor(options.getOutline(), options.getSemanticPane(), scrollAnchor, {
+        behavior: 'instant',
+      });
+    } else {
+      await restoreSourceScrollAnchorWhenReady(scrollAnchor, generation);
+    }
 
-      restoreSourceScrollAnchorWhenReady(scrollAnchor);
-    }, 2);
+    await waitForAnimationFrames(1);
+    return {
+      status: generation === modeSwitchGeneration ? 'ready' : 'superseded',
+      generation,
+      ...(targetViewMode === 'split' ? { alignmentStatus } : {}),
+    };
   }
 
-  function updateMarkdown(event: Event) {
-    const sourceTextarea = event.currentTarget as HTMLTextAreaElement;
-    options.setPendingSourceScrollTop(options.getSourcePane()?.scrollTop ?? null);
-    pendingSourceCaretLine = getSourceSelectionLine(sourceTextarea);
-    options.getEditor().setMarkdown(sourceTextarea.value, {
+  function updateMarkdown(markdown: string) {
+    const sourceEditor = options.getSourceEditor();
+    options.setPendingSourceScrollTop(options.getSplitView?.() ? null : options.getSourcePane()?.scrollTop ?? null);
+    pendingSourceCaretLine = getSourceSelectionLine(sourceEditor);
+    options.getEditor().setMarkdown(markdown, {
       reason: 'source-input',
       sourceInput: true,
     });
@@ -81,6 +127,13 @@ export function createEditorInteractionController(options: EditorInteractionOpti
   }
 
   function runCommand(command: EditorCommand) {
+    if (options.getMode() === 'source' && (command.type === 'undo' || command.type === 'redo')) {
+      const sourceEditor = options.getSourceEditor();
+      sourceEditor?.focus();
+      if (command.type === 'undo') sourceEditor?.undo();
+      else sourceEditor?.redo();
+      return;
+    }
     if (command.type === 'insertToc' && options.getMode() === 'source') {
       insertTocAtSourceSelection();
       return;
@@ -91,10 +144,11 @@ export function createEditorInteractionController(options: EditorInteractionOpti
   }
 
   function insertTocAtSourceSelection() {
-    const sourceTextarea = options.getSourceTextarea();
+    const sourceEditor = options.getSourceEditor();
     const markdown = options.getEditor().getMarkdown();
-    const start = sourceTextarea?.selectionStart ?? markdown.length;
-    const end = sourceTextarea?.selectionEnd ?? start;
+    const selection = sourceEditor?.getSelection();
+    const start = selection?.from ?? markdown.length;
+    const end = selection?.to ?? start;
     const tocBlock = createTocBlock(markdown);
     const prefix = markdown.slice(0, start);
     const suffix = markdown.slice(end);
@@ -103,13 +157,13 @@ export function createEditorInteractionController(options: EditorInteractionOpti
     const nextMarkdown = `${prefix}${before}${tocBlock}${after}${suffix}`;
     const nextSelection = prefix.length + before.length + tocBlock.length;
 
-    options.getEditor().setMarkdown(nextMarkdown);
+    sourceEditor?.setMarkdown(nextMarkdown, { addToHistory: true });
     requestAnimationFrame(() => {
-      if (!sourceTextarea) {
+      if (!sourceEditor) {
         return;
       }
-      sourceTextarea.focus();
-      sourceTextarea.setSelectionRange(nextSelection, nextSelection);
+      sourceEditor.focus();
+      sourceEditor.setSelection(nextSelection);
       syncSourceTextareaHeight();
     });
   }
@@ -124,45 +178,41 @@ export function createEditorInteractionController(options: EditorInteractionOpti
     scheduleViewportMeasure(() => measureEditorViewportLayout(null), 2);
   }
 
-  function restoreSourceScrollAnchorWhenReady(
+  async function restoreSourceScrollAnchorWhenReady(
     scrollAnchor: OutlineScrollAnchor | null,
-    attemptsRemaining = 120,
+    generation: number,
   ) {
-    measureEditorViewportLayout(null);
-    const sourcePane = options.getSourcePane();
-    const maxScrollTop = sourcePane ? Math.max(0, sourcePane.scrollHeight - sourcePane.clientHeight) : 0;
-    const expectedProgress = getAnchorDocumentProgress(scrollAnchor);
-
-    if (sourcePane && maxScrollTop > 0) {
-      scrollSourceToAnchor(
-        options.getOutline(),
-        sourcePane,
-        options.getSourceTextarea(),
-        scrollAnchor,
-      );
-      refreshEditorViewportLayout();
-    }
-
-    const needsRetry =
-      attemptsRemaining > 0 &&
-      (!sourcePane ||
-        maxScrollTop <= 0 ||
-        (expectedProgress > 0.01 && sourcePane.scrollTop <= 1));
-    if (needsRetry) {
-      scheduleAfterFrames(() =>
-        restoreSourceScrollAnchorWhenReady(scrollAnchor, attemptsRemaining - 1),
-      );
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      if (generation !== modeSwitchGeneration) return;
+      measureEditorViewportLayout(null);
+      const sourcePane = options.getSourcePane();
+      if (sourcePane && isPaneLayoutVisible(sourcePane)) {
+        scrollSourceToAnchor(
+          options.getOutline(),
+          sourcePane,
+          options.getSourceEditor(),
+          scrollAnchor,
+        );
+        await waitForAnimationFrames(1);
+        if (generation !== modeSwitchGeneration) return;
+        measureEditorViewportLayout(null);
+        scrollSourceToAnchor(
+          options.getOutline(),
+          sourcePane,
+          options.getSourceEditor(),
+          scrollAnchor,
+        );
+        return;
+      }
+      await waitForAnimationFrames(1);
     }
   }
 
   function measureEditorViewportLayout(restoreScrollTop: number | null) {
-    if (options.getMode() === 'semantic') {
-      const semanticPane = options.getSemanticPane();
-      if (semanticPane) {
-        semanticPane.scrollLeft = 0;
-      }
+    const semanticPane = options.getSemanticPane();
+    if (semanticPane && isPaneLayoutVisible(semanticPane)) {
+      semanticPane.scrollLeft = 0;
       clampPaneScrollTop(semanticPane);
-      return;
     }
 
     const sourcePane = options.getSourcePane();
@@ -171,20 +221,14 @@ export function createEditorInteractionController(options: EditorInteractionOpti
     }
     const scrollTopBeforeMeasure = sourcePane?.scrollTop ?? 0;
 
-    const sourceTextarea = options.getSourceTextarea();
-    if (sourceTextarea) {
-      sourceTextarea.style.height = 'auto';
-      sourceTextarea.style.height = `${Math.max(
-        sourceTextarea.scrollHeight,
-        sourceTextarea.clientHeight,
-        estimateSourceTextareaContentHeight(sourceTextarea),
-      )}px`;
-    }
+    const sourceEditor = options.getSourceEditor();
+    options.suppressSourceLayoutScroll?.();
+    getEditorGrid()?.dispatchEvent(new Event('nomo:editor-viewport-layout-refresh'));
 
     if (restoreScrollTop !== null && sourcePane) {
       const nextScrollTop = getSourceScrollTopWithVisibleCaret(
         sourcePane,
-        sourceTextarea,
+        sourceEditor,
         restoreScrollTop,
         pendingSourceCaretLine,
       );
@@ -206,18 +250,86 @@ export function createEditorInteractionController(options: EditorInteractionOpti
     });
   }
 
-  function scheduleAfterFrames(callback: () => void, frameCount = 1) {
+  function waitForAnimationFrames(frameCount = 1) {
     const raf = getRequestAnimationFrame();
-    const run = (remainingFrames: number) => {
-      raf(() => {
-        if (remainingFrames <= 1) {
-          callback();
-          return;
-        }
-        run(remainingFrames - 1);
-      });
-    };
-    run(Math.max(1, frameCount));
+    return new Promise<void>((resolve) => {
+      const run = (remainingFrames: number) => {
+        raf(() => {
+          if (remainingFrames <= 1) {
+            resolve();
+            return;
+          }
+          run(remainingFrames - 1);
+        });
+      };
+      run(Math.max(1, frameCount));
+    });
+  }
+
+  function scheduleAfterFrames(callback: () => void, frameCount = 1) {
+    void waitForAnimationFrames(frameCount).then(callback);
+  }
+
+  function getEditorGrid() {
+    return (
+      options.getSourcePane()?.closest<HTMLElement>('.editor-grid') ??
+      options.getSemanticPane()?.closest<HTMLElement>('.editor-grid') ??
+      null
+    );
+  }
+
+  function waitForPaneGeometry(targetViewMode: EditorMode | 'split', generation: number) {
+    const editorGrid = getEditorGrid();
+    if (!editorGrid) {
+      return waitForAnimationFrames(2).then(() =>
+        targetViewMode === 'split' ? ('degraded' as const) : ('aligned' as const),
+      );
+    }
+
+    return new Promise<'aligned' | 'degraded' | 'skipped'>((resolve) => {
+      let settled = false;
+      let fallbackFrames = 0;
+      const readyEventName = 'nomo:editor-pane-geometry-ready';
+      const finish = (status: 'aligned' | 'degraded' | 'skipped') => {
+        if (settled) return;
+        settled = true;
+        editorGrid.removeEventListener(readyEventName, handleGeometryReady as EventListener);
+        resolve(status);
+      };
+      const handleGeometryReady = (event: Event) => {
+        const detail = (
+          event as CustomEvent<{
+            mode?: string;
+            status?: 'aligned' | 'degraded' | 'skipped';
+          }>
+        ).detail;
+        if (detail?.mode !== targetViewMode) return;
+        finish('aligned');
+      };
+      const waitForFallback = () => {
+        getRequestAnimationFrame()(() => {
+          fallbackFrames += 1;
+          if (generation !== modeSwitchGeneration) {
+            finish('degraded');
+            return;
+          }
+          if (fallbackFrames >= 18) {
+            editorGrid.dispatchEvent(
+              new CustomEvent('nomo:editor-viewport-layout-refresh', {
+                detail: { synchronous: true },
+              }),
+            );
+            finish('degraded');
+            return;
+          }
+          waitForFallback();
+        });
+      };
+
+      editorGrid.addEventListener(readyEventName, handleGeometryReady as EventListener);
+      editorGrid.dispatchEvent(new Event('nomo:editor-viewport-layout-refresh'));
+      waitForFallback();
+    });
   }
 
   function clampPaneScrollTop(pane: HTMLElement | undefined, preferredScrollTop?: number) {
@@ -236,17 +348,16 @@ export function createEditorInteractionController(options: EditorInteractionOpti
 
   function getSourceScrollTopWithVisibleCaret(
     sourcePane: HTMLElement,
-    sourceTextarea: HTMLTextAreaElement | undefined,
+    sourceEditor: MarkdownSourceEditorHandle | undefined,
     preferredScrollTop: number,
     caretLine: number | null,
   ) {
-    if (!sourceTextarea || caretLine == null) {
+    if (!sourceEditor || caretLine == null) {
       return preferredScrollTop;
     }
 
     const lineHeight = options.getSourceLineHeight();
-    const textareaTop = getSourceTextareaTopInPane(sourcePane, sourceTextarea);
-    const caretTop = textareaTop + Math.max(0, caretLine - 1) * lineHeight;
+    const caretTop = Math.max(0, caretLine - 1) * lineHeight;
     const caretBottom = caretTop + lineHeight;
     const visibleTop = preferredScrollTop;
     const visibleBottom = preferredScrollTop + sourcePane.clientHeight;
@@ -260,32 +371,8 @@ export function createEditorInteractionController(options: EditorInteractionOpti
     return preferredScrollTop;
   }
 
-  function getSourceTextareaTopInPane(
-    sourcePane: HTMLElement,
-    sourceTextarea: HTMLTextAreaElement,
-  ) {
-    const paneRect = sourcePane.getBoundingClientRect();
-    const textareaRect = sourceTextarea.getBoundingClientRect();
-    const hasUsableRect =
-      paneRect.top !== 0 ||
-      textareaRect.top !== 0 ||
-      textareaRect.height > 0 ||
-      textareaRect.bottom > 0;
-
-    if (hasUsableRect) {
-      return textareaRect.top - paneRect.top + sourcePane.scrollTop;
-    }
-
-    return sourceTextarea.offsetTop || 0;
-  }
-
   function isPaneLayoutVisible(pane: HTMLElement | undefined) {
     return Boolean(pane && pane.getClientRects().length > 0);
-  }
-
-  function estimateSourceTextareaContentHeight(sourceTextarea: HTMLTextAreaElement) {
-    const lineCount = Math.max(1, sourceTextarea.value.split(/\r?\n/).length);
-    return Math.ceil(lineCount * options.getSourceLineHeight());
   }
 
   function getSemanticModeSwitchAnchor(
@@ -315,13 +402,13 @@ export function createEditorInteractionController(options: EditorInteractionOpti
     sourcePane: HTMLElement | undefined,
     savedScrollTop: number,
   ): OutlineScrollAnchor | null {
-    const sourceTextarea = options.getSourceTextarea();
+    const sourceEditor = options.getSourceEditor();
     const lineHeight = options.getSourceLineHeight();
     return getSourceScrollAnchor(
       outline,
       savedScrollTop,
       lineHeight,
-      sourceTextarea,
+      sourceEditor,
       sourcePane,
     );
   }
@@ -376,19 +463,15 @@ export function createEditorInteractionController(options: EditorInteractionOpti
     return Array.from(pane.querySelectorAll<HTMLElement>('.ProseMirror > *'));
   }
 
-  function getSourceSelectionLine(sourceTextarea: HTMLTextAreaElement | undefined) {
-    if (!sourceTextarea) {
+  function getSourceSelectionLine(sourceEditor: MarkdownSourceEditorHandle | undefined) {
+    if (!sourceEditor) {
       return null;
     }
-    return sourceTextarea.value.slice(0, sourceTextarea.selectionStart).split(/\r?\n/).length;
+    return sourceEditor.lineAtOffset(sourceEditor.getSelection().from);
   }
 
   function clamp(value: number, min: number, max: number) {
     return Math.min(max, Math.max(min, value));
-  }
-
-  function getAnchorDocumentProgress(scrollAnchor: OutlineScrollAnchor | null) {
-    return scrollAnchor?.documentProgress ?? 0;
   }
 
   function getRequestAnimationFrame() {

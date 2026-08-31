@@ -125,6 +125,12 @@ pub fn run() {
                     }
                 }
                 if crate::window::external_open::is_document_window_label(label) {
+                    if let Some(registry) = window
+                        .app_handle()
+                        .try_state::<crate::window::open_targets::OpenTargetRegistry>()
+                    {
+                        registry.forget_window(label);
+                    }
                     crate::window::state::forget_markdown_mini_mode_window(label);
                     crate::window::tray::forget_window(window.app_handle(), label);
                 }
@@ -222,6 +228,7 @@ pub fn run() {
             let config = crate::config::ConfigManager::load_or_default(app.handle())
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
             app.manage(config);
+            app.manage(crate::window::open_targets::OpenTargetRegistry::default());
             let segmented_root = app
                 .path()
                 .app_data_dir()
@@ -346,6 +353,9 @@ pub fn run() {
             crate::file_system::image_assets::upload_image_via_picgo_server,
             crate::file_system::image_assets::test_picgo_connection,
             crate::window::commands::create_new_window,
+            crate::window::open_targets::sync_window_open_targets,
+            crate::window::open_targets::prepare_open_target_window,
+            crate::window::open_targets::release_open_target_reservation,
             crate::window::commands::open_settings_window,
             crate::window::commands::mark_settings_close_handler_ready,
             crate::window::commands::cancel_settings_close_request,
@@ -386,25 +396,41 @@ pub fn run() {
         .expect("error while building Nomo")
         .run(|_app, _event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { urls } = _event {
-                let paths = crate::window::external_open::collect_markdown_paths_from_urls(urls);
-                crate::app_logger::info(
-                    "ExternalOpen",
-                    &format!("收到 macOS Opened 事件：files={}", paths.len()),
-                );
-                if _app.try_state::<crate::config::ConfigManager>().is_none() {
-                    if let Err(error) =
-                        crate::window::external_open::queue_early_external_open(paths)
+            match _event {
+                tauri::RunEvent::Opened { urls } => {
+                    let paths =
+                        crate::window::external_open::collect_markdown_paths_from_urls(urls);
+                    crate::app_logger::info(
+                        "ExternalOpen",
+                        &format!("收到 macOS Opened 事件：files={}", paths.len()),
+                    );
+                    if _app.try_state::<crate::config::ConfigManager>().is_none() {
+                        if let Err(error) =
+                            crate::window::external_open::queue_early_external_open(paths)
+                        {
+                            crate::app_logger::error("ExternalOpen", &error);
+                        } else {
+                            crate::app_logger::info("ExternalOpen", "已暂存 setup 前文件打开请求");
+                        }
+                    } else if let Err(error) =
+                        crate::window::external_open::route_external_open(_app, paths)
                     {
                         crate::app_logger::error("ExternalOpen", &error);
-                    } else {
-                        crate::app_logger::info("ExternalOpen", "已暂存 setup 前文件打开请求");
                     }
-                } else if let Err(error) =
-                    crate::window::external_open::route_external_open(_app, paths)
-                {
-                    crate::app_logger::error("ExternalOpen", &error);
                 }
+                tauri::RunEvent::Reopen {
+                    has_visible_windows,
+                    ..
+                } => {
+                    crate::app_logger::info(
+                        "Window",
+                        &format!("收到 macOS Dock 重开事件：visible={has_visible_windows}"),
+                    );
+                    if !has_visible_windows {
+                        crate::window::tray::show_main_window(_app);
+                    }
+                }
+                _ => {}
             }
         });
 }
