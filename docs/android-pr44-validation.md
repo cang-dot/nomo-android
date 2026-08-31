@@ -9,6 +9,7 @@ This is a preview feature, not a production Android release. Keep PR #44 in Draf
 - Imported documents have no age-based expiration. Clearing Android's cache does not remove durable imports. Uninstalling Nomo or clearing **app data/storage** still removes app-owned files; export anything important first. See [Android app-specific storage](https://developer.android.com/training/data-storage/app-specific).
 - On startup, legacy `cache/incoming` files are copied before recent entries, workspace paths, pending-open records and snapshot indexes are updated. Existing migrated copies are reused, not overwritten. Failed copies retain the original file and reference; failed configuration persistence retains the original configuration. Legacy originals are not deleted by migration. If a migration warning appears, do **not** clear cache until migration succeeds.
 - Shared text, complete URLs and imported paths are not written to the external-open logs.
+- Replay recognition uses a fingerprint from saved Activity state, not an external Intent's claimed processing flag. Android path comparison preserves case, so differently-cased import names cannot silently select the same tab.
 - After syncing master, mobile file opening stays in the current activity and does not invoke the desktop-only open-target/window registry. The desktop routing remains unchanged.
 
 ## Search contract
@@ -39,6 +40,7 @@ CI artifacts are named `nomo-pr44-arm64-<head SHA>`. Each archive contains:
 - an offline-capable ARM64 debug APK with app ID `com.nomo.desktop.pr44` and label **Nomo PR44**, isolated from the normal app;
 - `BUILD.txt` with the exact source commit;
 - `SHA256SUMS.txt` and this checklist.
+- a Chinese phone checklist and a compressed fixture with 199 small documents and one exact 100MiB TXT (cross-boundary and tail markers).
 
 It uses an ephemeral CI debug key, not a production key. Separate CI runs may use different debug keys: Android can require uninstalling the previous **preview** before installation. Export preview documents first; uninstall deletes that preview's data. Do not uninstall the normal app.
 

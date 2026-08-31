@@ -30,7 +30,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Targeted regression tests
-        run: pnpm exec vitest run src/app/services/mobileDocumentSearch.test.ts src/app/services/desktopWindow.mobile.test.ts
+        run: pnpm exec vitest run src/app/services/mobileDocumentSearch.test.ts src/app/services/desktopWindow.mobile.test.ts src/app/utils/pathLabels.mobile.test.ts
       - name: Type check (baseline failures are not ignored)
         run: pnpm check
 

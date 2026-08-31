@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
+import { createSearchFixture } from './create-search-fixture.mjs';
 
 const sourceRoot = resolve('src-tauri/gen/android/app/build/outputs/apk');
 function apkFiles(directory) {
@@ -35,4 +36,8 @@ writeFileSync(
   join(output, 'BUILD.txt'),
   `PR: https://github.com/nomo-md/nomo/pull/44\nCommit: ${head}\nApplication ID: com.nomo.desktop.pr44\nSigning: ephemeral CI debug key; no release credentials\nNot a release. Phone acceptance is still required.\n`,
 );
-copyFileSync('docs/android-pr44-validation.md', join(output, 'CHECKLIST.md'));
+copyFileSync('docs/android-pr44-checklist.zh-CN.md', join(output, 'CHECKLIST.md'));
+copyFileSync('docs/android-pr44-validation.md', join(output, 'TECHNICAL-NOTES.md'));
+const fixture = resolve('.artifacts/android-search-fixture');
+createSearchFixture(fixture);
+execFileSync('zip', ['-q', '-r', '-9', join(output, 'search-fixture.zip'), '.'], { cwd: fixture });
