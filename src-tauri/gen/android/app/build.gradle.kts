@@ -13,11 +13,15 @@ val tauriProperties = Properties().apply {
     }
 }
 
+val isPrPreview = providers.gradleProperty("nomoPrPreview").orNull == "true"
+
 android {
     compileSdk = 36
     namespace = "com.nomo.desktop"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
+        manifestPlaceholders["appLabel"] = if (isPrPreview) "Nomo PR44" else "@string/app_name"
+        manifestPlaceholders["activityLabel"] = if (isPrPreview) "Nomo PR44" else "@string/main_activity_title"
         applicationId = "com.nomo.desktop"
         minSdk = 24
         targetSdk = 36
@@ -29,7 +33,7 @@ android {
     }
     buildTypes {
         getByName("debug") {
-            manifestPlaceholders["usesCleartextTraffic"] = "true"
+            manifestPlaceholders["usesCleartextTraffic"] = if (isPrPreview) "false" else "true"
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
