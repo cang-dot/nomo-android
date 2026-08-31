@@ -6,9 +6,11 @@ import androidx.activity.enableEdgeToEdge
 import java.util.UUID
 
 class MainActivity : TauriActivity() {
+  private var shareFingerprint: String? = null
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
-    normalizeSharedText(intent)
+    normalizeSharedText(intent, savedInstanceState?.getString("nomo.sharedTextFingerprint"))
     super.onCreate(savedInstanceState)
   }
 
@@ -18,12 +20,18 @@ class MainActivity : TauriActivity() {
     setIntent(intent)
   }
 
-  private fun normalizeSharedText(intent: Intent?) {
+  override fun onSaveInstanceState(outState: Bundle) {
+    shareFingerprint?.let { outState.putString("nomo.sharedTextFingerprint", it) }
+    super.onSaveInstanceState(outState)
+  }
+
+  private fun normalizeSharedText(intent: Intent?, restoredFingerprint: String? = null) {
+    shareFingerprint = null
     if (intent?.action != Intent.ACTION_SEND || intent.type != "text/plain" ||
-      intent.hasExtra(Intent.EXTRA_STREAM) || intent.getBooleanExtra("nomo.text.normalized", false)) return
+      intent.hasExtra(Intent.EXTRA_STREAM)) return
     val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty()
-    intent.putExtra(Intent.EXTRA_TEXT, sharedTextDataUrl(text, UUID.randomUUID().toString()))
-    // Activity recreation must not encode an already-normalized delivery a second time.
-    intent.putExtra("nomo.text.normalized", true)
+    val normalized = prepareSharedText(text, UUID.randomUUID().toString(), restoredFingerprint)
+    intent.putExtra(Intent.EXTRA_TEXT, normalized)
+    shareFingerprint = sharedTextFingerprint(normalized)
   }
 }

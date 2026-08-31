@@ -394,8 +394,8 @@ fn copy_stream(
         if read < 0 {
             break;
         }
-        if read == 0 {
-            return Err("分享文件读取未取得进展".into());
+        if read == 0 || read as usize > COPY_BUFFER_BYTES {
+            return Err("分享文件返回无效读取长度".into());
         }
         let bytes = env
             .convert_byte_array(&buffer)

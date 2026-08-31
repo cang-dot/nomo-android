@@ -14,4 +14,13 @@ class SharedTextTest {
       assertNotEquals(url, sharedTextDataUrl(text, "delivery-2"))
     }
   }
+
+  @Test fun activityReplayIsStableButNewSharesCannotBypassTextNormalization() {
+    val first = prepareSharedText("https://example.com/?secret=value", "first", null)
+    assertEquals(first, prepareSharedText(first, "recreated", sharedTextFingerprint(first)))
+    val nextShare = prepareSharedText(first, "new-intent", null)
+    assertNotEquals(first, nextShare)
+    assertEquals(first, URLDecoder.decode(nextShare.substringAfter(',').substringBefore('#'), "UTF-8"))
+    assertTrue(prepareSharedText("", "empty", null).startsWith("data:text/plain,"))
+  }
 }
