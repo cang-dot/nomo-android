@@ -1,13 +1,12 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
+  import { FileJson2, FileText, FileType2, FolderClosed, Search, X } from '@lucide/svelte';
   import {
-    FileJson2,
-    FileText,
-    FileType2,
-    FolderClosed,
-    Search,
-    X,
-  } from '@lucide/svelte';
-  import { readMarkdownFile } from '../../lib/desktop/tauriStorage';
+    createMobileDocumentSearch,
+    emptyMobileSearch,
+    nativeMobileSearchPort,
+    normalizeMobileSearch,
+  } from '../services/mobileDocumentSearch';
   import type { RecentEntry } from '../../lib/desktop/tauriStorage';
   import type { Tab } from '../types';
   import { t } from '../i18n';
@@ -23,9 +22,11 @@
 
   let visible = false;
   let query = '';
-  let contentIndex = new Map<string, string>();
-  let indexingPaths = new Set<string>();
-  let indexRunActive = false;
+  let searchState = emptyMobileSearch();
+  const search = createMobileDocumentSearch(nativeMobileSearchPort, (state) => {
+    searchState = state;
+  });
+  onDestroy(() => search.dispose());
   let drawerElement: HTMLElement | null = null;
   let edgeElement: HTMLElement | null = null;
   let pointerId: number | null = null;
@@ -47,7 +48,9 @@
     active: boolean;
     openedAt: number;
     kind: Tab['documentKind'];
-    content: string;
+    content?: string;
+    version: number;
+    sessionId?: string;
   }
 
   interface SnippetPart {
@@ -69,7 +72,7 @@
   }
 
   function normalizeSearch(value: string) {
-    return value.trim().toLowerCase().normalize('NFKD');
+    return normalizeMobileSearch(value.trim());
   }
 
   function fuzzyMatch(haystack: string, needle: string) {
@@ -83,152 +86,108 @@
   }
 
   $: recentByPath = new Map(
-    recentFiles
-      .filter((entry) => entry.entryType === 'file')
-      .map((entry) => [entry.path.toLowerCase(), entry]),
+    recentFiles.filter((entry) => entry.entryType === 'file').map((entry) => [entry.path, entry]),
   );
 
   $: documents = [
-    ...tabs.map((tab): CachedDocument => ({
-      key: `tab:${tab.id}`,
-      id: tab.id,
-      path: tab.nativePath ?? tab.filePath,
-      name: tab.fileName || tab.filePath,
-      directory: normalizeDirectory(tab.nativePath ?? tab.filePath),
-      dirty: tab.dirty,
-      active: tab.id === activeTabId,
-      openedAt: recentByPath.get((tab.nativePath ?? tab.filePath).toLowerCase())?.openedAt ?? 0,
-      kind: tab.documentKind,
-      content: tab.documentKind === 'markdown' ? tab.markdown : '',
-    })),
+    ...tabs.map(
+      (tab): CachedDocument => ({
+        key: `tab:${tab.id}`,
+        id: tab.id,
+        path: tab.nativePath ?? tab.filePath,
+        name: tab.fileName || tab.filePath,
+        directory: normalizeDirectory(tab.nativePath ?? tab.filePath),
+        dirty: tab.dirty,
+        active: tab.id === activeTabId,
+        openedAt: recentByPath.get(tab.nativePath ?? tab.filePath)?.openedAt ?? 0,
+        kind: tab.documentKind,
+        content: tab.documentKind === 'markdown' ? tab.markdown : undefined,
+        version: tab.documentKind === 'markdown' ? tab.version : tab.revision,
+        sessionId: tab.documentKind === 'markdown' ? undefined : tab.sessionId,
+      }),
+    ),
     ...recentFiles
       .filter(
         (entry) =>
           entry.entryType === 'file' &&
-          !tabs.some(
-            (tab) => (tab.nativePath ?? tab.filePath).toLowerCase() === entry.path.toLowerCase(),
-          ),
+          !tabs.some((tab) => (tab.nativePath ?? tab.filePath) === entry.path),
       )
-      .map((entry): CachedDocument => ({
-        key: `recent:${entry.path}`,
-        path: entry.path,
-        name: entry.title || entry.path.replace(/\\/g, '/').split('/').pop() || entry.path,
-        directory: normalizeDirectory(entry.path),
-        dirty: false,
-        active: false,
-        openedAt: entry.openedAt,
-        kind: entry.path.toLowerCase().endsWith('.json') ? 'json' : 'markdown',
-        content: '',
-      })),
+      .map(
+        (entry): CachedDocument => ({
+          key: `recent:${entry.path}`,
+          path: entry.path,
+          name: entry.title || entry.path.replace(/\\/g, '/').split('/').pop() || entry.path,
+          directory: normalizeDirectory(entry.path),
+          dirty: false,
+          active: false,
+          openedAt: entry.openedAt,
+          kind: entry.path.toLowerCase().endsWith('.json')
+            ? 'json'
+            : entry.path.toLowerCase().endsWith('.txt')
+              ? 'text'
+              : 'markdown',
+          version: entry.modifiedAt,
+        }),
+      ),
   ].sort((left, right) => {
-    const sourceOrder = left.directory.localeCompare(right.directory, undefined, { sensitivity: 'base' });
+    const sourceOrder = left.directory.localeCompare(right.directory, undefined, {
+      sensitivity: 'base',
+    });
     return sourceOrder || right.openedAt - left.openedAt;
   });
 
-  async function indexContent(document: CachedDocument) {
-    if (contentIndex.has(document.path) || indexingPaths.has(document.path)) return;
-    indexingPaths.add(document.path);
-    indexingPaths = new Set(indexingPaths);
-    try {
-      const result = await readMarkdownFile(document.path);
-      contentIndex.set(document.path, normalizeSearch(result.markdown));
-    } catch {
-      contentIndex.set(document.path, '');
-    } finally {
-      indexingPaths.delete(document.path);
-      indexingPaths = new Set(indexingPaths);
-      contentIndex = new Map(contentIndex);
-    }
-  }
-
-  async function ensureContentIndex() {
-    if (indexRunActive) return;
-    const pending = documents.filter(
-      (document) => !document.content && !contentIndex.has(document.path),
-    );
-    if (!pending.length) return;
-    indexRunActive = true;
-    let cursor = 0;
-    const worker = async () => {
-      while (cursor < pending.length) {
-        const document = pending[cursor];
-        cursor += 1;
-        await indexContent(document);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(4, pending.length) }, () => worker()));
-    indexRunActive = false;
-  }
-
-  $: if (open && normalizeSearch(query)) {
-    void ensureContentIndex();
-  }
+  $: search.search(query, open, documents);
 
   $: filteredDocuments = documents.filter((document) => {
     const normalizedQuery = normalizeSearch(query);
     if (!normalizedQuery) return true;
     const name = normalizeSearch(document.name);
-    const content = normalizeSearch(document.content);
+    const result = searchState.results.get(document.key);
     return (
       name.includes(normalizedQuery) ||
       fuzzyMatch(name, normalizedQuery) ||
-      content.includes(normalizedQuery) ||
-      contentIndex.get(document.path)?.includes(normalizedQuery) === true
+      Boolean(result?.snippet) ||
+      Boolean(result?.error)
     );
   });
 
-  $: groupedDocuments = filteredDocuments.reduce<Array<[string, CachedDocument[]]>>((groups, document) => {
-    const group = groups[groups.length - 1];
-    if (group?.[0] === document.directory) group[1].push(document);
-    else groups.push([document.directory, [document]]);
-    return groups;
-  }, []);
+  $: groupedDocuments = filteredDocuments.reduce<Array<[string, CachedDocument[]]>>(
+    (groups, document) => {
+      const group = groups[groups.length - 1];
+      if (group?.[0] === document.directory) group[1].push(document);
+      else groups.push([document.directory, [document]]);
+      return groups;
+    },
+    [],
+  );
 
   function iconFor(kind: CachedDocument['kind']) {
     return kind === 'json' ? FileJson2 : kind === 'text' ? FileType2 : FileText;
   }
 
-  function contentSnippet(document: CachedDocument): ContentSnippet | null {
-    const searchTerm = query.trim();
-    if (!searchTerm) return null;
-    const source = document.content || contentIndex.get(document.path) || '';
-    if (!source) return null;
-    const compact = source.replace(/\s+/g, ' ').trim();
-    const normalizedContent = compact.toLocaleLowerCase();
-    const normalizedTerm = searchTerm.toLocaleLowerCase();
-    const matchIndex = normalizedContent.indexOf(normalizedTerm);
-    if (matchIndex < 0) return null;
-
-    const start = Math.max(0, matchIndex - 34);
-    const end = Math.min(compact.length, matchIndex + searchTerm.length + 54);
-    const excerpt = compact.slice(start, end);
-    const normalizedExcerpt = excerpt.toLocaleLowerCase();
-    const parts: SnippetPart[] = [];
-    let cursor = 0;
-    let nextMatch = normalizedExcerpt.indexOf(normalizedTerm);
-    while (nextMatch >= 0) {
-      if (nextMatch > cursor) {
-        parts.push({ text: excerpt.slice(cursor, nextMatch), highlighted: false });
-      }
-      parts.push({
-        text: excerpt.slice(nextMatch, nextMatch + searchTerm.length),
-        highlighted: true,
-      });
-      cursor = nextMatch + searchTerm.length;
-      nextMatch = normalizedExcerpt.indexOf(normalizedTerm, cursor);
-    }
-    if (cursor < excerpt.length) {
-      parts.push({ text: excerpt.slice(cursor), highlighted: false });
-    }
+  function contentSnippet(
+    document: CachedDocument,
+    results: typeof searchState.results,
+  ): ContentSnippet | null {
+    const snippet = results.get(document.key)?.snippet;
+    if (!snippet) return null;
     return {
-      leadingEllipsis: start > 0,
-      trailingEllipsis: end < compact.length,
-      parts,
+      leadingEllipsis: snippet.leadingEllipsis,
+      trailingEllipsis: snippet.trailingEllipsis,
+      parts: [
+        { text: snippet.text.slice(0, snippet.highlightStart), highlighted: false },
+        {
+          text: snippet.text.slice(snippet.highlightStart, snippet.highlightEnd),
+          highlighted: true,
+        },
+        { text: snippet.text.slice(snippet.highlightEnd), highlighted: false },
+      ],
     };
   }
 
   function clampOffset(value: number) {
-    const width = drawerElement?.getBoundingClientRect().width ?? Math.min(window.innerWidth * 0.86, 360);
+    const width =
+      drawerElement?.getBoundingClientRect().width ?? Math.min(window.innerWidth * 0.86, 360);
     return Math.max(-width, Math.min(0, value));
   }
 
@@ -338,7 +297,12 @@
   {/if}
 
   {#if open}
-    <button class="mobile-drawer-backdrop" type="button" aria-label={t.close()} on:click={() => setOpen(false)}></button>
+    <button
+      class="mobile-drawer-backdrop"
+      type="button"
+      aria-label={t.close()}
+      on:click={() => setOpen(false)}
+    ></button>
   {/if}
 
   <aside
@@ -365,13 +329,29 @@
 
     <label class="mobile-drawer-search">
       <Search size={18} />
-      <input type="search" placeholder={t.searchReady()} bind:value={query} />
+      <input
+        type="search"
+        aria-label={t.searchReady()}
+        placeholder={t.searchReady()}
+        bind:value={query}
+      />
     </label>
 
-    <div class="mobile-drawer-list">
-      {#if query && !filteredDocuments.length}
+    {#if query.trim()}
+      <p class="mobile-drawer-search-status" role="status" aria-live="polite">
+        {#if searchState.phase === 'waiting' || searchState.phase === 'searching'}
+          {t.mobileSearchProgress({ completed: searchState.completed, total: searchState.total })}
+        {:else if searchState.phase === 'failed'}
+          {t.mobileSearchFailed()}
+        {:else if [...searchState.results.values()].some((result) => result.error)}
+          {t.mobileSearchPartialFailure()}
+        {/if}
+      </p>
+    {/if}
+    <div class="mobile-drawer-list" aria-busy={searchState.phase === 'searching'}>
+      {#if query && !filteredDocuments.length && searchState.phase === 'completed'}
         <p class="mobile-drawer-empty">{t.searchResultCount({ count: 0 })}</p>
-      {:else if !filteredDocuments.length}
+      {:else if !query && !filteredDocuments.length}
         <p class="mobile-drawer-empty">{t.currentFolder()}</p>
       {:else}
         {#each groupedDocuments as [directory, group]}
@@ -379,7 +359,7 @@
             <h2 title={directory}><FolderClosed size={15} /><span>{directory}</span></h2>
             {#each group as document}
               {@const DocumentIcon = iconFor(document.kind)}
-              {@const snippet = contentSnippet(document)}
+              {@const snippet = contentSnippet(document, searchState.results)}
               <div
                 class="mobile-drawer-document"
                 class:active={document.active}
@@ -396,9 +376,14 @@
                 <DocumentIcon size={18} />
                 <span class="mobile-drawer-document-copy">
                   <strong>{document.name}</strong>
+                  {#if searchState.results.get(document.key)?.error}
+                    <small>{t.mobileSearchReadFailed()}</small>
+                  {/if}
                   {#if snippet}
                     <small class="mobile-drawer-snippet">
-                      {#if snippet.leadingEllipsis}…{/if}{#each snippet.parts as part}{#if part.highlighted}<mark>{part.text}</mark>{:else}{part.text}{/if}{/each}{#if snippet.trailingEllipsis}…{/if}
+                      {#if snippet.leadingEllipsis}…{/if}{#each snippet.parts as part}{#if part.highlighted}<mark
+                            >{part.text}</mark
+                          >{:else}{part.text}{/if}{/each}{#if snippet.trailingEllipsis}…{/if}
                     </small>
                   {/if}
                 </span>
@@ -410,7 +395,8 @@
                     type="button"
                     aria-label={t.delete()}
                     on:click|stopPropagation={() => removeRecentEntry(document.path)}
-                  ><X size={14} /></button>
+                    ><X size={14} /></button
+                  >
                 {/if}
               </div>
             {/each}
@@ -422,6 +408,12 @@
 </div>
 
 <style>
+  .mobile-drawer-search-status {
+    min-height: 1.4em;
+    margin: 4px 16px;
+    color: var(--md-editor-muted-fg);
+    font-size: 12px;
+  }
   .mobile-drawer-root {
     position: fixed;
     inset: 0;
@@ -491,7 +483,9 @@
     border-right: 1px solid var(--md-editor-border);
     box-shadow: 18px 0 50px rgb(0 0 0 / 22%);
     transform: translateX(calc(-100% + var(--drawer-offset)));
-    transition: transform 320ms cubic-bezier(0.2, 0, 0, 1), visibility 0s linear 320ms;
+    transition:
+      transform 320ms cubic-bezier(0.2, 0, 0, 1),
+      visibility 0s linear 320ms;
     touch-action: pan-y;
   }
 
@@ -502,7 +496,9 @@
     transition: transform 320ms cubic-bezier(0.2, 0, 0, 1);
   }
 
-  .mobile-drawer-panel:not(.open) { pointer-events: none; }
+  .mobile-drawer-panel:not(.open) {
+    pointer-events: none;
+  }
 
   .mobile-drawer-panel:not(.visible) {
     visibility: hidden;
@@ -524,9 +520,23 @@
     min-height: 52px;
   }
 
-  .mobile-drawer-title { gap: 8px; color: var(--md-editor-fg); }
-  .mobile-drawer-title span { color: var(--md-editor-muted-fg); font-size: 13px; }
-  .mobile-drawer-header > button { display: grid; width: 44px; height: 44px; place-items: center; border: 0; background: transparent; color: var(--md-editor-fg); }
+  .mobile-drawer-title {
+    gap: 8px;
+    color: var(--md-editor-fg);
+  }
+  .mobile-drawer-title span {
+    color: var(--md-editor-muted-fg);
+    font-size: 13px;
+  }
+  .mobile-drawer-header > button {
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    border: 0;
+    background: transparent;
+    color: var(--md-editor-fg);
+  }
 
   .mobile-drawer-search {
     display: grid;
@@ -542,25 +552,122 @@
     color: var(--md-editor-muted-fg);
   }
 
-  .mobile-drawer-search input { width: 100%; min-height: 44px; border: 0; outline: 0; background: transparent; color: var(--md-editor-fg); font: inherit; }
-  .mobile-drawer-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
-  .mobile-drawer-group { margin-bottom: 16px; }
-  .mobile-drawer-group h2 { display: flex; align-items: center; gap: 7px; overflow: hidden; margin: 0 6px 6px; color: var(--md-editor-muted-fg); font-size: 12px; font-weight: 600; }
-  .mobile-drawer-group h2 span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mobile-drawer-document { position: relative; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; min-height: 48px; padding: 8px 10px; border: 0; border-radius: 12px; background: transparent; color: var(--md-editor-fg); text-align: left; font: inherit; cursor: pointer; }
-  .mobile-drawer-document-copy { display: grid; min-width: 0; gap: 3px; }
-  .mobile-drawer-document-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-  .mobile-drawer-snippet { display: -webkit-box; overflow: hidden; color: var(--md-editor-muted-fg); font-size: 12px; line-height: 1.45; white-space: normal; line-clamp: 2; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-  .mobile-drawer-snippet mark { padding: 0 2px; border-radius: 3px; background: color-mix(in srgb, var(--md-editor-accent) 28%, transparent); color: var(--md-editor-fg); font-weight: 650; }
-  .mobile-drawer-document.active { background: color-mix(in srgb, var(--md-editor-accent) 15%, transparent); color: var(--md-editor-accent-strong); }
-  .mobile-drawer-dirty { width: 8px; height: 8px; border-radius: 50%; background: var(--md-editor-accent-strong); }
-  .mobile-drawer-remove { display: grid; width: 30px; height: 30px; place-items: center; border: 0; background: transparent; color: var(--md-editor-muted-fg); }
-  .mobile-drawer-empty { padding: 18px 10px; color: var(--md-editor-muted-fg); }
+  .mobile-drawer-search input {
+    width: 100%;
+    min-height: 44px;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--md-editor-fg);
+    font: inherit;
+  }
+  .mobile-drawer-list {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .mobile-drawer-group {
+    margin-bottom: 16px;
+  }
+  .mobile-drawer-group h2 {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    overflow: hidden;
+    margin: 0 6px 6px;
+    color: var(--md-editor-muted-fg);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .mobile-drawer-group h2 span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mobile-drawer-document {
+    position: relative;
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    width: 100%;
+    min-height: 48px;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--md-editor-fg);
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+  }
+  .mobile-drawer-document-copy {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+  .mobile-drawer-document-copy strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+  }
+  .mobile-drawer-snippet {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--md-editor-muted-fg);
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: normal;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .mobile-drawer-snippet mark {
+    padding: 0 2px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--md-editor-accent) 28%, transparent);
+    color: var(--md-editor-fg);
+    font-weight: 650;
+  }
+  .mobile-drawer-document.active {
+    background: color-mix(in srgb, var(--md-editor-accent) 15%, transparent);
+    color: var(--md-editor-accent-strong);
+  }
+  .mobile-drawer-dirty {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--md-editor-accent-strong);
+  }
+  .mobile-drawer-remove {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    place-items: center;
+    border: 0;
+    background: transparent;
+    color: var(--md-editor-muted-fg);
+  }
+  .mobile-drawer-empty {
+    padding: 18px 10px;
+    color: var(--md-editor-muted-fg);
+  }
 
-  @keyframes mobile-drawer-fade-in { to { opacity: 1; } }
+  @keyframes mobile-drawer-fade-in {
+    to {
+      opacity: 1;
+    }
+  }
 
   @media (prefers-reduced-motion: reduce) {
-    .mobile-drawer-panel { transition: none; }
-    .mobile-drawer-backdrop { animation: none; opacity: 1; }
+    .mobile-drawer-panel {
+      transition: none;
+    }
+    .mobile-drawer-backdrop {
+      animation: none;
+      opacity: 1;
+    }
   }
 </style>

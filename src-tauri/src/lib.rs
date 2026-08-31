@@ -6,6 +6,8 @@ mod models;
 mod text_document;
 #[cfg(any(target_os = "android", test))]
 mod mobile_imports;
+#[cfg(any(mobile, test))]
+mod mobile_search;
 
 #[cfg(target_os = "android")]
 mod android_intent;

@@ -11,6 +11,7 @@ pub fn run() {
     crate::app_logger::init(&context.config().identifier);
 
     tauri::Builder::default()
+        .manage(crate::mobile_search::MobileSearchState::default())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
@@ -40,6 +41,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            crate::mobile_search::start_mobile_document_search,
+            crate::mobile_search::cancel_mobile_document_search,
             get_mobile_system_theme,
             crate::file_system::read_markdown_file,
             crate::file_system::write_markdown_file,
