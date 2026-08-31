@@ -49,21 +49,11 @@ pub(crate) fn scan_file(
     }
     let mut prefix = [0; 3];
     let size = file.read(&mut prefix).map_err(|_| "read-failed")?;
-    let (encoding, skip) = if prefix[..size].starts_with(&[0xff, 0xfe]) {
-        (UTF_16LE, 2)
-    } else if prefix[..size].starts_with(&[0xfe, 0xff]) {
-        (UTF_16BE, 2)
-    } else if prefix[..size].starts_with(&[0xef, 0xbb, 0xbf]) {
-        (UTF_8, 3)
-    } else {
+    let (encoding, skip) = detect_encoding(&prefix[..size], || {
         file.rewind().map_err(|_| "read-failed")?;
-        match decode_stream(&mut file, UTF_8, cancel, |_| Ok(false)) {
-            Ok(()) => (UTF_8, 0),
-            Err(error) if error == "unsupported-encoding" => (GBK, 0),
-            Err(error) => return Err(error),
-        }
-    };
-    file.seek(SeekFrom::Start(skip))
+        decode_stream(&mut file, UTF_8, cancel, |_| Ok(false))
+    })?;
+    file.seek(SeekFrom::Start(skip as u64))
         .map_err(|_| "read-failed")?;
     let result = scan_reader(&mut file, encoding, query, cancel)?;
     let after = std::fs::metadata(path).map_err(|_| "file-changed")?;
@@ -71,6 +61,44 @@ pub(crate) fn scan_file(
         return Err("file-changed".into());
     }
     Ok(result)
+}
+
+fn detect_encoding(
+    prefix: &[u8],
+    validate_utf8: impl FnOnce() -> Result<(), String>,
+) -> Result<(&'static Encoding, usize), String> {
+    if prefix.starts_with(&[0xff, 0xfe]) {
+        return Ok((UTF_16LE, 2));
+    }
+    if prefix.starts_with(&[0xfe, 0xff]) {
+        return Ok((UTF_16BE, 2));
+    }
+    if prefix.starts_with(&[0xef, 0xbb, 0xbf]) {
+        return Ok((UTF_8, 3));
+    }
+    match validate_utf8() {
+        Ok(()) => Ok((UTF_8, 0)),
+        Err(error) if error == "unsupported-encoding" => Ok((GBK, 0)),
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn scan_snapshot(
+    readers: impl Fn() -> Box<dyn Read + Send>,
+    query: &str,
+    cancel: &AtomicBool,
+) -> Result<Option<Snippet>, String> {
+    cancelled(cancel)?;
+    let mut prefix = [0; 3];
+    let size = readers().read(&mut prefix).map_err(|_| "read-failed")?;
+    let (encoding, skip) = detect_encoding(&prefix[..size], || {
+        decode_stream(&mut readers(), UTF_8, cancel, |_| Ok(false))
+    })?;
+    let mut reader = readers();
+    reader
+        .read_exact(&mut prefix[..skip])
+        .map_err(|_| "read-failed")?;
+    scan_reader(&mut reader, encoding, query, cancel)
 }
 
 pub(crate) fn scan_reader(

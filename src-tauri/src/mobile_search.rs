@@ -1,7 +1,7 @@
 //! Android 文档抽屉搜索：串行只读扫描，取消旧请求，只返回有限摘要。
 mod scanner;
 use crate::text_document::DocumentSessionManager;
-use scanner::{scan_file, scan_reader, Snippet};
+use scanner::{scan_file, scan_snapshot, Snippet};
 use serde::{Deserialize, Serialize};
 use std::{
     path::Path,
@@ -155,8 +155,8 @@ fn search_source(
     cancel: &AtomicBool,
 ) -> Result<Option<Snippet>, String> {
     if let Some(id) = &source.session_id {
-        let mut reader = manager.mobile_search_reader(id, source.version)?;
-        let result = scan_reader(&mut reader, encoding_rs::UTF_8, query, cancel)?;
+        let readers = manager.mobile_search_snapshot_readers(id, source.version)?;
+        let result = scan_snapshot(readers, query, cancel)?;
         if manager
             .session_status(id)
             .map_err(|_| "session-closed")?
@@ -305,6 +305,37 @@ mod tests {
             assert_eq!(
                 search_source(&source, "needle", &manager, &cancel).unwrap_err(),
                 "revision-changed"
+            );
+        }
+    }
+
+    #[test]
+    fn mobile_search_preserves_encoding_matches_in_readonly_segmented_snapshots() {
+        let root = Root::new();
+        let manager = DocumentSessionManager::new(root.0.join("sessions")).unwrap();
+        let text = "中文目标";
+        let utf16: Vec<u8> = [
+            vec![0xff, 0xfe],
+            text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        ]
+        .concat();
+        for (index, bytes) in [encoding_rs::GBK.encode(text).0.into_owned(), utf16]
+            .into_iter()
+            .enumerate()
+        {
+            let path = root.0.join(format!("encoded-{index}.txt"));
+            fs::write(&path, bytes).unwrap();
+            let opened = manager.open_document(path.clone(), None).unwrap();
+            let source = SearchSource {
+                key: index.to_string(),
+                version: opened.revision,
+                path: Some(path.to_string_lossy().into_owned()),
+                session_id: Some(opened.session_id),
+            };
+            assert!(
+                search_source(&source, "目标", &manager, &AtomicBool::new(false))
+                    .unwrap()
+                    .is_some()
             );
         }
     }
