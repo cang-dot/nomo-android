@@ -4925,7 +4925,7 @@
             const paths = JSON.parse(pendingExternalOpenSetting.valueJson);
             if (Array.isArray(paths)) {
               const validPaths = paths.filter((path): path is string => typeof path === 'string');
-              logInfo('ExternalOpen', '读取冷启动待打开文件', { paths: validPaths });
+              logInfo('ExternalOpen', '读取冷启动待打开文件', { count: validPaths.length });
               queuePendingExternalOpenPaths(validPaths);
             }
             await updateAppSetting(`pendingExternalOpen:${windowLabel}`, '').catch(() => undefined);
@@ -5002,7 +5002,7 @@
       await refreshRecentFiles();
       const startupExternalOpenPaths = pendingExternalOpenPaths;
       pendingExternalOpenPaths = [];
-      logInfo('ExternalOpen', '处理冷启动文件队列', { paths: startupExternalOpenPaths });
+      logInfo('ExternalOpen', '处理冷启动文件队列', { count: startupExternalOpenPaths.length });
       if (startupExternalOpenPaths.length === 0) {
         await maybeOpenFirstRunSample({
           settings,
@@ -5578,7 +5578,7 @@
       }).catch(() => null),
       listenDesktopOpenDocuments((paths, targetWindowLabel) => {
         logInfo('ExternalOpen', '收到原生文件打开事件', {
-          paths,
+          count: paths.length,
           targetWindowLabel,
           appBootState,
         });
@@ -5672,7 +5672,7 @@
 
   // 双击 md 文件启动：不恢复上次工作区，只打开文件所在目录并打开该文件
   async function openStartupExternalMarkdownPaths(paths: string[]) {
-    logInfo('ExternalOpen', '开始处理冷启动文件', { paths });
+    logInfo('ExternalOpen', '开始处理冷启动文件', { count: paths.length });
     if (!desktopEnabled || paths.length === 0) {
       return;
     }
