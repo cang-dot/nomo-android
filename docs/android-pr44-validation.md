@@ -31,7 +31,7 @@ The `PR validation` workflow runs on `pull_request`, checks out the exact head S
 
 Rust tests cover atomic publication, name collisions, unchanged provider originals, idempotent old-cache migration, recent/workspace/pending/snapshot references, copy/config failures, reopening after old-cache deletion, 200 documents, a streamed 100MiB tail match, Unicode/cross-chunk/encoding cases, cancellation and dirty TXT/JSON snapshots. Vitest covers debounce, cancellation, stale task/version filtering and unsaved Markdown routing. These tests do not replace phone acceptance.
 
-The original PR baseline has two type-check errors in `pendingInlineMark.test.ts` (MouseEvent versus PointerEvent). They are not hidden or waived by this workflow. An absent/skipped/approval-pending job is not a passing check.
+The original PR baseline had two type-check errors in `pendingInlineMark.test.ts` (MouseEvent versus PointerEvent). Its click fixture now supplies the complete pointer-event contract on a dispatchable jsdom mouse event; editor production code and existing assertions are unchanged. This suite is included in the targeted CI regressions. Type-check failures are never hidden or waived, and an absent/skipped/approval-pending job is not a passing check.
 
 ## Preview APK
 
