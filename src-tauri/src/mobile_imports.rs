@@ -272,23 +272,64 @@ fn remap_workspace(value: &mut Value, mappings: &BTreeMap<String, String>) {
 mod tests {
     use super::*;
     use crate::models::{RecentEntry, SettingRecord, StoredSnapshotRecord};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        sync::atomic::{AtomicU64, Ordering},
+        time::UNIX_EPOCH,
+    };
+    static NEXT_ROOT_ID: AtomicU64 = AtomicU64::new(0);
+
     struct TestRoot(PathBuf);
     impl TestRoot {
         fn new() -> Self {
-            Self(std::env::temp_dir().join(format!(
+            // Reserve the directory before sharing its path; wall-clock ticks can repeat on Windows.
+            loop {
+                let path = std::env::temp_dir().join(format!(
                     "nomo-mobile-import-{}-{}",
                     std::process::id(),
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_nanos()
-                )))
+                    NEXT_ROOT_ID.fetch_add(1, Ordering::Relaxed)
+                ));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("cannot reserve import test directory: {error}"),
+                }
+            }
         }
     }
     impl Drop for TestRoot {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn mobile_imports_test_roots_are_exclusive_during_parallel_runs() {
+        let barrier = std::sync::Barrier::new(32);
+        let mut roots = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..32)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        TestRoot::new()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let unique: std::collections::HashSet<_> = roots.iter().map(|root| &root.0).collect();
+        assert_eq!(unique.len(), 32);
+        for root in &roots {
+            fs::write(root.0.join("owned.txt"), "keep").unwrap();
+        }
+        drop(roots.remove(0));
+        for root in roots {
+            assert_eq!(
+                fs::read_to_string(root.0.join("owned.txt")).unwrap(),
+                "keep"
+            );
         }
     }
 

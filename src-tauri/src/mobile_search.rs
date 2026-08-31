@@ -199,25 +199,25 @@ pub(crate) fn cancel_mobile_document_search(
 mod tests {
     use super::*;
     use crate::text_document::{SegmentedEdit, SegmentedEditBatch};
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, path::PathBuf, sync::atomic::AtomicU64};
+
+    static NEXT_ROOT_ID: AtomicU64 = AtomicU64::new(0);
 
     struct Root(PathBuf);
     impl Root {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "nomo-mobile-search-{}-{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            fs::create_dir_all(&path).unwrap();
-            Self(path)
+            loop {
+                let path = std::env::temp_dir().join(format!(
+                    "nomo-mobile-search-{}-{}",
+                    std::process::id(),
+                    NEXT_ROOT_ID.fetch_add(1, Ordering::Relaxed)
+                ));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("cannot reserve search test directory: {error}"),
+                }
+            }
         }
     }
     impl Drop for Root {
