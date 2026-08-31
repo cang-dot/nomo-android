@@ -16,6 +16,16 @@ pub fn run() {
         .setup(move |app| {
             let config = crate::config::ConfigManager::load_or_default(app.handle())
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+            #[cfg(target_os = "android")]
+            {
+                let cache = app.path().app_cache_dir()?.join(crate::mobile_imports::INCOMING_DIR);
+                let durable = app.path().app_data_dir()?.join(crate::mobile_imports::INCOMING_DIR);
+                if !matches!(crate::mobile_imports::migrate_legacy(&config, &cache, &durable), Ok(0)) {
+                    crate::app_logger::warn("ExternalOpen", "部分旧导入文档未能迁移，已保留原文件与引用");
+                    use tauri_plugin_dialog::DialogExt;
+                    app.dialog().message("部分旧文档未能迁移。原文件仍保留，请勿清理缓存；检查剩余空间后重启重试。").title("Nomo").show(|_| {});
+                }
+            }
             app.manage(config);
 
             let segmented_root = app

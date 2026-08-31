@@ -4,6 +4,8 @@ mod file_system;
 mod i18n;
 mod models;
 mod text_document;
+#[cfg(any(target_os = "android", test))]
+mod mobile_imports;
 
 #[cfg(target_os = "android")]
 mod android_intent;
