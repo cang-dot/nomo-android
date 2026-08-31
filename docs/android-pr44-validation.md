@@ -9,6 +9,7 @@ This is a preview feature, not a production Android release. Keep PR #44 in Draf
 - Imported documents have no age-based expiration. Clearing Android's cache does not remove durable imports. Uninstalling Nomo or clearing **app data/storage** still removes app-owned files; export anything important first. See [Android app-specific storage](https://developer.android.com/training/data-storage/app-specific).
 - On startup, legacy `cache/incoming` files are copied before recent entries, workspace paths, pending-open records and snapshot indexes are updated. Existing migrated copies are reused, not overwritten. Failed copies retain the original file and reference; failed configuration persistence retains the original configuration. Legacy originals are not deleted by migration. If a migration warning appears, do **not** clear cache until migration succeeds.
 - Shared text, complete URLs and imported paths are not written to the external-open logs.
+- After syncing master, mobile file opening stays in the current activity and does not invoke the desktop-only open-target/window registry. The desktop routing remains unchanged.
 
 ## Search contract
 

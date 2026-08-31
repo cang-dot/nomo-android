@@ -175,7 +175,7 @@
     resolveTheme,
     writeThemeBootSnapshot,
   } from './services/themeManager';
-  import { getPlatformCapabilities } from './services/platform';
+  import { getPlatformCapabilities, isMobilePlatform } from './services/platform';
   import type { ThemeMode } from '../lib/theme/types';
   import { applyInterfaceLanguagePreference, t, type EffectiveInterfaceLocale } from './i18n';
   import { createFolderExplorerController } from './services/folderExplorerController';
@@ -2003,6 +2003,11 @@
   }
 
   async function routeOpenTargetWithBehavior(target: OpenTarget) {
+    // Mobile has one activity and no desktop open-target registry or secondary windows.
+    if (isMobilePlatform()) {
+      await openTargetInCurrentWindow(target);
+      return;
+    }
     await syncCurrentWindowOpenTargetsNow();
     const decision = await prepareOpenTargetWindow(desktopEnabled, target, false);
     if (decision.action === 'handled') {
